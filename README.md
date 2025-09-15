@@ -21,6 +21,15 @@ The developers assume no liability and are not responsible for any misuse or dam
 
 ## ✨ Features
  
+TLS Implementation: Proper use of TLS 1.3 with strong cipher suites
+Authentication: Secure password hashing (bcrypt + SHA256 with salt)
+Rate Limiting: Comprehensive rate limiting system for various operations
+Input Validation: Good validation for IP addresses, ports, and user input
+Session Management: Secure session tokens with IP validation
+RBAC System: Role-based access control implementation
+Logging: Extensive logging system for security events
+Connection Limits: IP-based connection limiting
+
 <pre>
 
    ┌──────────────────────────────────────────────────────────────────────────────┐
