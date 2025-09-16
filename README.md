@@ -90,3 +90,18 @@ users/adduser/deluser - User management (Admin+)
 clear - Clear terminal
 help - Show help menu
 ```
+
+
+```yaml
+
+## Technical Specifications
+- **Max Bot Connections:** 50,000  
+- **Max Sessions:** 10,000  
+- **Max Attack History Entries:** 10,000  
+- **Max Ongoing Attacks:** 1,000  
+- **Session Timeout:** 30 minutes  
+- **Auth Lockout:** 5 minutes after 3 failed attempts  
+```
+
+> ⚠ **Disclaimer:** This repository contains sensitive software for educational purposes only. Unauthorized deployment or use for attacking systems without consent is illegal and strictly prohibited. Only use in controlled lab environments.
+
