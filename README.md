@@ -79,7 +79,7 @@
 ### 10. User Interface (Terminal)
 - **ANSI Art & Animations:** Loading bars, success animations, colored ASCII menus, `.tfx` GIF-like sequences.  
 - **Interactive Commands:**
-|-|
+```text
 bots - Show bot count
 methods - List available attack methods
 attackhistory - Show history of attacks
@@ -89,4 +89,4 @@ botstatus - Show detailed bot statuses
 users/adduser/deluser - User management (Admin+)
 clear - Clear terminal
 help - Show help menu
-|-|
+```
