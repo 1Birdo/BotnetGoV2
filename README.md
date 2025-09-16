@@ -79,7 +79,8 @@
 ### 10. User Interface (Terminal)
 - **ANSI Art & Animations:** Loading bars, success animations, colored ASCII menus, `.tfx` GIF-like sequences.  
 - **Interactive Commands:**
-```text
+```yaml
+## Commands
 bots - Show bot count
 methods - List available attack methods
 attackhistory - Show history of attacks
