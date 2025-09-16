@@ -1,5 +1,9 @@
 # Botnet Control & Management System
 
+Small Update / Improvements From BotnetGo -- 
+
+![NVIDIA_Overlay_3pYLQ0048f](https://github.com/user-attachments/assets/cf1d4a33-b106-4858-ae98-15c67a6d3a43)
+
 ## Overview & Architecture
 
 **Language:** Go (Golang) – chosen for performance, concurrency, and cross-compilation.  
