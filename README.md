@@ -85,6 +85,7 @@ attackhistory - Show history of attacks
 ongoing - Show current attack
 allattacks - Show all ongoing attacks
 botstatus - Show detailed bot statuses
+---
 users/adduser/deluser - User management (Admin+)
 clear - Clear terminal
 help - Show help menu
