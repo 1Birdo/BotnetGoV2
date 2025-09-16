@@ -78,14 +78,14 @@
 
 ### 10. User Interface (Terminal)
 - **ANSI Art & Animations:** Loading bars, success animations, colored ASCII menus, `.tfx` GIF-like sequences.  
-- **Interactive Commands:**  
+- **Interactive Commands:**
+--- 
 bots - Show bot count
 methods - List available attack methods
 attackhistory - Show history of attacks
 ongoing - Show current attack
 allattacks - Show all ongoing attacks
 botstatus - Show detailed bot statuses
----
 users/adduser/deluser - User management (Admin+)
 clear - Clear terminal
 help - Show help menu
