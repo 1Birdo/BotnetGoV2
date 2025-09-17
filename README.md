@@ -5,7 +5,7 @@ Small Update / Improvements From BotnetGo --
 ![NVIDIA_Overlay_3pYLQ0048f](https://github.com/user-attachments/assets/cf1d4a33-b106-4858-ae98-15c67a6d3a43)
 
 ## Overview & Architecture
-
+```
 Robust Session Management - JWT tokens with revocation, refresh tokens, IP validation
 Comprehensive Rate Limiting - Multiple layers (auth, attacks, API, connections)
 Proper TLS Implementation - TLS 1.3 with modern cipher suites
@@ -15,7 +15,7 @@ RBAC System - Fine-grained method permissions
 Secure Authentication - bcrypt hashing, constant-time comparisons
 Logging & Monitoring - Comprehensive audit trails
 Connection Pooling - Prevents resource exhaustion
-
+```
 **Language:** Go (Golang) – chosen for performance, concurrency, and cross-compilation.  
 
 **Protocol:** Custom binary protocol over TLS 1.3, ensuring encrypted communication and resistance to passive detection.  
