@@ -1,125 +1,107 @@
-# Botnet Control & Management System
+# 🔱 Botnet Control & Management System (BCMS)
 
-Small Update / Improvements From BotnetGo -- 
+An enhanced, high-performance C2 (Command and Control) system built in Go (Golang), focusing on security, concurrency, and robust resource management.
 
-![UI](https://github.com/user-attachments/assets/cf1d4a33-b106-4858-ae98-15c67a6d3a43)
-
-<img width="675" height="429" alt="image" src="https://github.com/user-attachments/assets/a44c1f81-c60c-4988-af4c-52ed1e593ff3" />
+[![UI Preview]](https://github.com/user-attachments/assets/cf1d4a33-b106-4858-ae98-15c67a6d3a43)
 
 
-## Overview & Architecture
-```
-Robust Session Management - JWT tokens with revocation, refresh tokens, IP validation
-Comprehensive Rate Limiting - Multiple layers (auth, attacks, API, connections)
-Proper TLS Implementation - TLS 1.3 with modern cipher suites
-Input Validation - Extensive validation for IPs, ports, filenames, etc.
-Memory Management - Bounded structures prevent memory exhaustion
-RBAC System - Fine-grained method permissions
-Secure Authentication - bcrypt hashing, constant-time comparisons
-Logging & Monitoring - Comprehensive audit trails
-Connection Pooling - Prevents resource exhaustion
-```
-**Language:** Go (Golang) – chosen for performance, concurrency, and cross-compilation.  
-
-**Protocol:** Custom binary protocol over TLS 1.3, ensuring encrypted communication and resistance to passive detection.  
-
-### Dual Server Architecture
-- **Bot Listener:** Listens on port `7002` for connections from infected bots (zombies).  
-- **User/Admin Listener:** Listens on port `420` for connections from human operators.  
-- **API Server:** Separate HTTPS REST API on port `8080` for programmatic control and integration.  
-
-**Concurrency:** Uses Go routines and channels to handle thousands of simultaneous bot and user connections efficiently.  
+> ⚠️ **Disclaimer:** This software is for **educational and authorized security research purposes only**. Use in unauthorized or illegal activities is strictly forbidden. Deploy only in controlled laboratory or sanctioned environments.
 
 ---
 
-## Core Features & Capabilities
+## ✨ Key Capabilities
 
-### 1. Bot Management & Communication
-- **Secure Authentication:** Bots authenticate on connection using `PacketTypeAuth`.  
-- **Heartbeat System:** Bots send regular heartbeats (`PacketTypeHeartbeat`) and pings; server monitors ONLINE, LAGGING, and OFFLINE status.  
-- **Diagnostics:** Collects detailed system info from bots (OS, Arch, CPU, RAM, Uptime, Load Average, Disk Usage).  
-- **Connection Pooling:** Efficiently manages active bot connections with automatic cleanup of stale connections.  
-- **Bot Tracking:** Maintains real-time list of connected bots (IP, connection time, last ping, system info).  
+| Feature | Description |
+| :--- | :--- |
+| **High Performance** | Built with **Go** for exceptional concurrency and performance, efficiently managing **thousands of bots** using Go routines. |
+| **Secure Comms** | Custom **binary protocol over TLS 1.3** ensuring encrypted, secure communication resistant to passive detection. |
+| **Robust Security** | Multi-layered **Rate Limiting**, secure **JWT Session Management** with revocation, and extensive **Input Validation**. |
+| **RBAC** | **Role-Based Access Control** system (`rbac.json`) for fine-grained user permissions over attack methods. |
+| **Flexible Control** | Dual control interfaces: **Terminal UI** for operators and a dedicated **REST API** for programmatic integration. |
 
-### 2. Attack Orchestration
-- **Supported Methods:**  
-  `!udpsmart`, `!udpflood`, `!tcpflood`, `!synflood`, `!ackflood`, `!greflood`, `!dns`, `!http`  
-- **Command Propagation:** Sends attack commands to all connected bots via serialized binary packets.  
-- **Attack Management:**  
-  - Tracks ongoing attacks and remaining duration.  
-  - Maintains history of past attacks.  
-  - Allows users to stop their own attacks (`stopattack`).  
-- **Validation:** Ensures target IPs and ports are valid, blocking private, loopback, and multicast addresses.  
+---
 
-### 3. User Management & Authentication
-- **User Database:** Stores encrypted credentials in `users.json`.  
-- **Secure Authentication:** Uses bcrypt for password hashing.  
-- **Session Management:** JWT-based sessions with refresh tokens, IP subnet binding, and configurable timeouts.  
-- **Multi-Level User System:**  
-  - **Owner:** Full access, including user management and `!reinstall`.  
-  - **Admin:** Can manage users and all attack methods.  
-  - **Pro:** Access to powerful methods subset.  
-  - **Basic:** Access to basic methods like `!udpflood` and `!http`.  
-- **API Access:** Each user has unique API Token & Secret for REST API.  
+## 🛡️ Core Security & Architecture
 
-### 4. Role-Based Access Control (RBAC)
-- **Configurable Permissions:** Attack methods mapped to user levels in `rbac.json`.  
-- **Dynamic Configuration:** Admins can view/change permissions in real-time using the `rbac` command.  
+The system uses a **Dual Server Architecture** to segregate bot and operator traffic, maximizing stability and control.
 
-### 5. REST API Server
-- **Secure HTTPS API:**  
-  - `POST /api/attack` – Launch an attack.  
-  - `GET /api/bots` – List all bots.  
-  - `GET /api/stats` – Server statistics.  
-- **Authentication:** API Token & Secret in headers or query parameters.  
-- **Rate Limiting:** Endpoints protected by rate limiting system.  
+### Architecture Summary
 
-### 6. Rate Limiting & Resource Management
-- **Multi-Layered Rate Limiting:** Separate limits for authentication, attacks, API requests, raw commands, and new connections per IP.  
-- **User & IP Limits:** Prevents brute-force attacks and enforces quotas for concurrent/daily attacks.  
+| Component | Purpose | Protocol & Port |
+| :--- | :--- | :--- |
+| **Bot Listener** | Receives and manages connections from infected bots (zombies). | Custom Binary/TLS on `7002` |
+| **User/Admin Listener** | Receives connections from human operators for C&C access. | Custom/TLS on `420` |
+| **API Server** | Provides programmatic control and statistics. | **HTTPS REST API** on `8080` |
 
-### 7. Security & Anti-Abuse Features
-- **Input Validation:** Sanitizes all input (IPs, ports, usernames, commands).  
-- **Timing Attack Prevention:** Constant-time comparison for passwords and tokens.  
-- **Token Blacklisting:** JWT tokens can be revoked early.  
-- **Connection Limits:** Limits excessive connections to admin panel.  
-- **Secure TLS Config:** Enforces TLS 1.3 with modern ciphers and perfect forward secrecy.  
+### Security Highlights
+* **Authentication:** `bcrypt` password hashing and secure, constant-time comparisons.
+* **Session Management:** JWT tokens with refresh, revocation, and IP validation.
+* **TLS:** Enforces **TLS 1.3** with modern cipher suites.
+* **Resource Management:** **Bounded Data Structures** (`BoundedMap`, `BoundedSlice`) prevent memory exhaustion from excessive data or logging.
 
-### 8. Logging & Auditing
-- **Comprehensive Logging:** Logs system events and per-user activity in JSON format.  
-- **Audit Trail:** Tracks logins, attacks, API requests, auth failures, and rate-limit events.  
+---
 
-### 9. Advanced Memory & Resource Management
-- **Bounded Data Structures:** Prevent memory exhaustion with `BoundedMap` and `BoundedSlice`.  
-- **Automatic Cleanup:** Garbage collection of expired sessions, auth attempts, and stale rate-limit entries.  
+## 🛠️ Bot & Attack Management
 
-### 10. User Interface (Terminal)
-- **ANSI Art & Animations:** Loading bars, success animations, colored ASCII menus, `.tfx` GIF-like sequences.  
-- **Interactive Commands:**
-```yaml
-## Commands
-bots - Show bot count
-methods - List available attack methods
-attackhistory - Show history of attacks
-ongoing - Show current attack
-allattacks - Show all ongoing attacks
-botstatus - Show detailed bot statuses
-users/adduser/deluser - User management (Admin+)
-clear - Clear terminal
-help - Show help menu
-```
+The system is engineered for reliable diagnostics and powerful attack orchestration.
 
+### Bot Diagnostics
+* **Real-time Status:** Tracks bots as **ONLINE**, **LAGGING**, or **OFFLINE** using a heartbeat system.
+* **System Info:** Collects detailed diagnostics (OS, Arch, CPU, RAM, Uptime, Load Average, Disk Usage).
+* **Connection Pooling:** Efficiently manages active connections, automatically cleaning up stale ones.
 
-```yaml
+### Supported Attack Methods
+A comprehensive suite of methods for stress testing and authorized vulnerability research:
+* `!udpsmart`, `!udpflood`, `!tcpflood`, `!synflood`, `!ackflood`, `!greflood`, `!dns`, `!http`
 
-## Technical Specifications
-- **Max Bot Connections:** 50,000  
-- **Max Sessions:** 10,000  
-- **Max Attack History Entries:** 10,000  
-- **Max Ongoing Attacks:** 1,000  
-- **Session Timeout:** 30 minutes  
-- **Auth Lockout:** 5 minutes after 3 failed attempts  
-```
+### Command Validation
+All attack commands are rigorously validated to block private, loopback, and multicast addresses, enforcing a safe operational boundary.
 
-> ⚠ **Disclaimer:** This repository contains sensitive software for educational purposes only. Unauthorized deployment or use for attacking systems without consent is illegal and strictly prohibited. Only use in controlled lab environments.
+---
 
+## 👤 Operator & Access Control
+
+A multi-level user system ensures separation of duties and granular control.
+
+### User Roles
+| Role | Access Level | Key Privilege |
+| :--- | :--- | :--- |
+| **Owner** | Full | User management + `!reinstall` command |
+| **Admin** | High | Manage all users and all attack methods |
+| **Pro** | Medium | Access to a powerful subset of attack methods |
+| **Basic** | Low | Access to fundamental methods (`!udpflood`, `!http`) |
+
+### Terminal Commands
+The interactive **Terminal UI** provides direct control:
+
+| Command | Purpose |
+| :--- | :--- |
+| `bots` | Show total connected bot count. |
+| `ongoing` / `allattacks` | View active attack status and history. |
+| `methods` | List available attack methods based on user role. |
+| `users` / `adduser` | User management functions (Admin+ required). |
+| `help` / `clear` | General terminal utility commands. |
+
+---
+
+## 📊 Technical Specifications
+
+| Parameter | Limit |
+| :--- | :--- |
+| Max Bot Connections | **50,000** |
+| Max Operator Sessions | **10,000** |
+| Max Ongoing Attacks | **1,000** |
+| Session Timeout | **30 minutes** |
+| Auth Lockout | 5 minutes after 3 failed attempts |
+
+---
+
+## 💻 REST API Integration
+
+A dedicated API server allows for easy integration into custom scripts and external tools.
+
+* **Endpoint Examples:**
+    * `POST /api/attack` – Launch a new attack.
+    * `GET /api/bots` – Retrieve a list of connected bots.
+    * `GET /api/stats` – Get server performance and bot statistics.
+* **Authentication:** Requires unique **API Token & Secret** passed via headers or query parameters.
