@@ -2,7 +2,7 @@
 
 Small Update / Improvements From BotnetGo -- 
 
-![NVIDIA_Overlay_3pYLQ0048f](https://github.com/user-attachments/assets/cf1d4a33-b106-4858-ae98-15c67a6d3a43)
+![UI](https://github.com/user-attachments/assets/cf1d4a33-b106-4858-ae98-15c67a6d3a43)
 
 <img width="675" height="429" alt="image" src="https://github.com/user-attachments/assets/a44c1f81-c60c-4988-af4c-52ed1e593ff3" />
 
