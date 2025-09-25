@@ -1,0 +1,46 @@
+{
+  "method_permissions": {
+    "!ackflood": [
+      "Owner",
+      "Admin"
+    ],
+    "!dns": [
+      "Owner",
+      "Admin"
+    ],
+    "!greflood": [
+      "Owner",
+      "Admin"
+    ],
+    "!http": [
+      "Owner",
+      "Admin",
+      "Pro",
+      "Basic"
+    ],
+    "!reinstall": [
+      "Owner"
+    ],
+    "!synflood": [
+      "Owner",
+      "Admin",
+      "Pro"
+    ],
+    "!tcpflood": [
+      "Owner",
+      "Admin",
+      "Pro"
+    ],
+    "!udpflood": [
+      "Owner",
+      "Admin",
+      "Pro",
+      "Basic"
+    ],
+    "!udpsmart": [
+      "Owner",
+      "Admin",
+      "Pro"
+    ]
+  }
+}
