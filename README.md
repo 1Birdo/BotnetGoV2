@@ -1,4 +1,4 @@
-# 🔱 Botnet Control & Management System (BCMS)
+# 🔱 BotnetGoV2
 
 An enhanced, high-performance C2 (Command and Control) system built in Go (Golang), focusing on security, concurrency, and robust resource management.
 
