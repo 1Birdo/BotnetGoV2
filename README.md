@@ -11,6 +11,10 @@ An enhanced, high-performance C2 (Command and Control) system built in Go (Golan
 
 
 > 🚫[  **API server / Usage**  ]   If you are look for the API section please check the bottom of the 'Readme.md'
+
+To connect to this you Will need either Openssl or ncat, Alternative Tools can be used.
+OpenSSL is more prefered as i use that more to connect / test, then ncat. 
+Due to its how it Communicates Securely.
 ---
 
 ## ✨ Key Capabilities
