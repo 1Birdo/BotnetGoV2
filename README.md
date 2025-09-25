@@ -10,7 +10,7 @@ An enhanced, high-performance C2 (Command and Control) system built in Go (Golan
 > ⚠️ **Disclaimer:** This software is for **educational and authorized security research purposes only**. Use in unauthorized or illegal activities is strictly forbidden. Deploy only in controlled laboratory or sanctioned environments.
 
 
-> 🚫[  **API**  ]If you are look for the API section please check the bottom of the 'Readme.md'
+> 🚫[  **API server / Usage**  ]   If you are look for the API section please check the bottom of the 'Readme.md'
 ---
 
 ## ✨ Key Capabilities
