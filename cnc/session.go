@@ -113,6 +113,10 @@ func NewSecretManager() *SecretManager {
 
 // loadJWTSigningKey loads or generates the JWT signing key
 func loadJWTSigningKey() error {
+	// Create directory if it doesn't exist
+	if err := os.MkdirAll("data/certs", 0700); err != nil {
+		return fmt.Errorf("creating certs directory: %w", err)
+	}
 	// Try to load from environment variable first
 	if key := os.Getenv("JWT_SIGNING_KEY"); key != "" {
 		jwtSigningKey = []byte(key)
@@ -318,7 +322,11 @@ func ValidateSession(tokenString, ip, userAgent string) (*Session, error) {
 		return nil, errors.New("session not found")
 	}
 
-	session := sessionRaw.(*Session)
+	session, ok := sessionRaw.(*Session)
+	if !ok {
+		LogSystem("ERROR", "INVALID_SESSION_TYPE", fmt.Sprintf("Expected *Session, got %T", sessionRaw))
+		return nil, errors.New("session validation error")
+	}
 	session.mu.Lock()
 	defer session.mu.Unlock()
 
@@ -334,10 +342,10 @@ func ValidateSession(tokenString, ip, userAgent string) (*Session, error) {
 	}
 
 	// Verify IP address (allow same subnet)
-	if !isSameSubnet(net.ParseIP(session.IP), net.ParseIP(ip), 24) {
+	if session.IP != ip { // Replace the isSameSubnet call
 		LogSessionEvent(session.User.Username, ip, "IP_MISMATCH")
 		RevokeSession(session.ID)
-		return nil, errors.New("IP address mismatch")
+		return nil, errors.New("IP address changed - session revoked")
 	}
 
 	// Verify user agent (optional but recommended)
@@ -415,7 +423,11 @@ func RefreshSession(refreshToken, ip, userAgent string) (*Session, string, error
 		return nil, "", errors.New("session not found")
 	}
 
-	session := sessionRaw.(*Session)
+	session, ok := sessionRaw.(*Session)
+	if !ok {
+		LogSystem("ERROR", "INVALID_SESSION_TYPE", fmt.Sprintf("Expected *Session, got %T", sessionRaw))
+		return nil, "", errors.New("session validation error")
+	}
 	session.mu.Lock()
 	defer session.mu.Unlock()
 
@@ -498,17 +510,16 @@ func RevokeTokenByJWTID(jwtID string, expiresAt time.Time) {
 	tokenBlacklist.RevokeToken(jwtID, expiresAt)
 }
 
-// RemoveSession removes a session from storage
 func RemoveSession(sessionID string) {
 	if sessionRaw, exists := sessions.Get(sessionID); exists {
 		session := sessionRaw.(*Session)
-		LogSessionEvent(session.User.Username, session.IP, "REMOVED")
 
-		// Remove refresh token
+		tokenBlacklist.RevokeToken(session.JWTID, session.ExpiresAt)
 		refreshTokenStore.Delete(session.RefreshToken)
-	}
+		sessions.Delete(sessionID)
 
-	sessions.Delete(sessionID)
+		LogSessionEvent(session.User.Username, session.IP, "REMOVED")
+	}
 }
 
 // RevokeAllUserSessions revokes all sessions for a specific user
@@ -661,6 +672,10 @@ func isSameSubnet(ip1, ip2 net.IP, maskBits int) bool {
 	}
 
 	return true
+}
+
+func validateSessionIP(sessionIP, currentIP string) bool {
+	return sessionIP == currentIP // Exact match required
 }
 
 // GetTokenBlacklistSize returns the number of tokens in the blacklist

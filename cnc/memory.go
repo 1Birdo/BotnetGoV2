@@ -24,12 +24,7 @@ const (
 
 type BoundedMap struct {
 	data    map[string]interface{}
-	mutex   sync.RWMutex
 	maxSize int
-}
-
-type ResourceManager struct {
-	metrics map[string]int64
 	mutex   sync.RWMutex
 }
 
@@ -37,6 +32,39 @@ func NewBoundedMap(maxSize int) *BoundedMap {
 	return &BoundedMap{
 		data:    make(map[string]interface{}),
 		maxSize: maxSize,
+	}
+}
+
+// estimateSize roughly estimates the size of a value in bytes
+func estimateSize(value interface{}) int64 {
+	// This is a simplified implementation - you might want to make it more accurate
+	switch v := value.(type) {
+	case string:
+		return int64(len(v))
+	case []byte:
+		return int64(len(v))
+	case int:
+		return 8
+	case int64:
+		return 8
+	case float64:
+		return 8
+	case bool:
+		return 1
+	default:
+		// For complex types, return a conservative estimate
+		return 128
+	}
+}
+
+type ResourceManager struct {
+	metrics map[string]int64
+	mutex   sync.RWMutex
+}
+
+func NewResourceManager() *ResourceManager {
+	return &ResourceManager{
+		metrics: make(map[string]int64),
 	}
 }
 
@@ -52,7 +80,7 @@ func (rm *ResourceManager) GetUsage(resourceType string) int64 {
 	return rm.metrics[resourceType]
 }
 
-var resourceManager = &ResourceManager{metrics: make(map[string]int64)}
+var resourceManager = NewResourceManager()
 
 func (bm *BoundedMap) Set(key string, value interface{}) bool {
 	bm.mutex.Lock()
@@ -439,7 +467,7 @@ func cleanupBoundedCollections() {
 		}
 
 		boundedAttackHistory.Cleanup(func(value interface{}) bool {
-			attack := value.(attack)
+			attack := value.(Attack)
 			return time.Since(attack.start) > 24*time.Hour
 		})
 	}

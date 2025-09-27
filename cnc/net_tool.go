@@ -555,7 +555,6 @@ func ValidateIP(ipStr string) bool {
 
 	// Check for private networks using standard methods
 	if ip4 := ip.To4(); ip4 != nil {
-		// Private ranges using net.IPNet
 		privateNetworks := []*net.IPNet{
 			{IP: net.IPv4(10, 0, 0, 0), Mask: net.CIDRMask(8, 32)},     // 10.0.0.0/8
 			{IP: net.IPv4(172, 16, 0, 0), Mask: net.CIDRMask(12, 32)},  // 172.16.0.0/12
@@ -649,29 +648,6 @@ func ValidateFilename(filename string) bool {
 	// Allow only alphanumeric characters, hyphens, underscores, and .tfx extension
 	match, _ := regexp.MatchString("^[a-zA-Z0-9_-]+\\.tfx$", filename)
 	return match
-}
-
-func ValidateInput(input string, maxLength int) bool {
-	// Basic validation for terminal input
-	if len(input) > maxLength {
-		return false
-	}
-
-	// Check for potentially dangerous characters/patterns
-	dangerousPatterns := []string{
-		"../", "..\\", // Path traversal
-		";", "--", "/*", "*/", // SQL injection patterns
-		"<script>", "</script>", "javascript:", // XSS patterns
-		"|", "&", "`", "$", // Command injection
-	}
-
-	for _, pattern := range dangerousPatterns {
-		if strings.Contains(input, pattern) {
-			return false
-		}
-	}
-
-	return true
 }
 
 func CleanupSessions() {
