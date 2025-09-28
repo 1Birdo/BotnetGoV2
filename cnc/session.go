@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"strings"
 	"sync"
@@ -28,7 +27,6 @@ const (
 	TokenBlacklistCleanup = 1 * time.Hour
 )
 
-// Session represents a user session with enhanced security features
 type Session struct {
 	ID           string    `json:"id"`
 	User         User      `json:"user"`
@@ -37,31 +35,28 @@ type Session struct {
 	LoginTime    time.Time `json:"login_time"`
 	LastActive   time.Time `json:"last_active"`
 	ExpiresAt    time.Time `json:"expires_at"`
-	Token        string    `json:"token,omitempty"` // JWT token
+	Token        string    `json:"token,omitempty"`
 	RefreshToken string    `json:"refresh_token,omitempty"`
 	IsRevoked    bool      `json:"is_revoked"`
-	JWTID        string    `json:"jwt_id"` // Unique JWT identifier for revocation
+	JWTID        string    `json:"jwt_id"`
 	mu           sync.Mutex
 }
 
-// JWTClaims represents custom claims for JWT tokens
 type JWTClaims struct {
 	SessionID string `json:"session_id"`
 	UserID    string `json:"user_id"`
 	UserLevel string `json:"user_level"`
-	JWTID     string `json:"jti"` // JWT ID for revocation
+	JWTID     string `json:"jti"`
 	jwt.RegisteredClaims
 }
 
-// SecretManager handles secure storage and retrieval of secrets
 type SecretManager struct {
 	secrets map[string]string
 	mu      sync.RWMutex
 }
 
-// TokenBlacklist manages revoked tokens before their expiration
 type TokenBlacklist struct {
-	revokedTokens map[string]time.Time // token ID -> expiration time
+	revokedTokens map[string]time.Time
 	mu            sync.RWMutex
 }
 
@@ -69,73 +64,54 @@ type TokenBlacklist struct {
 var (
 	secretManager     *SecretManager
 	jwtSigningKey     []byte
-	refreshTokenStore *BoundedMap // Stores refresh tokens with session ID as key
+	refreshTokenStore *BoundedMap
 	tokenBlacklist    *TokenBlacklist
 )
 
-// Initialize session management system
 func initSessionManagement() error {
-	// Initialize secret manager
 	secretManager = NewSecretManager()
-	// Load or generate JWT signing key
 	if err := loadJWTSigningKey(); err != nil {
 		return fmt.Errorf("failed to load JWT signing key: %w", err)
 	}
-
-	// Initialize refresh token store
 	refreshTokenStore = NewBoundedMap(MaxSessions)
-
-	// Initialize token blacklist
 	tokenBlacklist = NewTokenBlacklist()
-
-	// Start session cleanup routine
 	go cleanupExpiredSessions()
-
-	// Start token blacklist cleanup routine
 	go tokenBlacklist.CleanupExpiredTokens()
 
 	return nil
 }
 
-// NewTokenBlacklist creates a new token blacklist instance
 func NewTokenBlacklist() *TokenBlacklist {
 	return &TokenBlacklist{
 		revokedTokens: make(map[string]time.Time),
 	}
 }
 
-// NewSecretManager creates a new secret manager instance
 func NewSecretManager() *SecretManager {
 	return &SecretManager{
 		secrets: make(map[string]string),
 	}
 }
 
-// loadJWTSigningKey loads or generates the JWT signing key
 func loadJWTSigningKey() error {
-	// Create directory if it doesn't exist
 	if err := os.MkdirAll("data/certs", 0700); err != nil {
 		return fmt.Errorf("creating certs directory: %w", err)
 	}
-	// Try to load from environment variable first
 	if key := os.Getenv("JWT_SIGNING_KEY"); key != "" {
 		jwtSigningKey = []byte(key)
 		return nil
 	}
 
-	// Try to load from secure file
 	if key, err := os.ReadFile("data/certs/jwt_signing.key"); err == nil {
 		jwtSigningKey = key
 		return nil
 	}
 
-	// Generate a new key
 	jwtSigningKey = make([]byte, 64) // 512 bits
 	if _, err := rand.Read(jwtSigningKey); err != nil {
 		return fmt.Errorf("failed to generate JWT signing key: %w", err)
 	}
 
-	// Save the key to a file (in production, use a proper secret management system)
 	if err := os.WriteFile("data/certs/jwt_signing.key", jwtSigningKey, 0600); err != nil {
 		return fmt.Errorf("failed to save JWT signing key: %w", err)
 	}
@@ -143,7 +119,6 @@ func loadJWTSigningKey() error {
 	return nil
 }
 
-// GenerateSecureToken creates a cryptographically secure random token
 func GenerateSecureToken(length int) (string, error) {
 	tokenBytes := make([]byte, length)
 	if _, err := rand.Read(tokenBytes); err != nil {
@@ -152,19 +127,16 @@ func GenerateSecureToken(length int) (string, error) {
 	return base64.URLEncoding.EncodeToString(tokenBytes), nil
 }
 
-// GenerateJWTID generates a unique JWT ID
 func GenerateJWTID() (string, error) {
 	return GenerateSecureToken(16)
 }
 
-// RevokeToken adds a token to the blacklist
 func (tb *TokenBlacklist) RevokeToken(jwtID string, expiresAt time.Time) {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
 	tb.revokedTokens[jwtID] = expiresAt
 }
 
-// IsTokenRevoked checks if a token is in the blacklist
 func (tb *TokenBlacklist) IsTokenRevoked(jwtID string) bool {
 	tb.mu.RLock()
 	defer tb.mu.RUnlock()
@@ -172,7 +144,6 @@ func (tb *TokenBlacklist) IsTokenRevoked(jwtID string) bool {
 	return exists
 }
 
-// CleanupExpiredTokens removes expired tokens from the blacklist
 func (tb *TokenBlacklist) CleanupExpiredTokens() {
 	ticker := time.NewTicker(TokenBlacklistCleanup)
 	defer ticker.Stop()
@@ -189,7 +160,6 @@ func (tb *TokenBlacklist) CleanupExpiredTokens() {
 	}
 }
 
-// GetSecret retrieves a secret from the secret manager
 func (sm *SecretManager) GetSecret(key string) (string, bool) {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
@@ -197,54 +167,44 @@ func (sm *SecretManager) GetSecret(key string) (string, bool) {
 	return secret, exists
 }
 
-// SetSecret stores a secret in the secret manager
 func (sm *SecretManager) SetSecret(key, value string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.secrets[key] = value
 }
 
-// DeleteSecret removes a secret
 func (sm *SecretManager) DeleteSecret(key string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	delete(sm.secrets, key)
 }
 
-// CreateSession creates a new session with enhanced security features
 func CreateSession(user User, ip, userAgent string) (*Session, string, error) {
-	// Check if user has too many active sessions
 	if count := CountUserSessions(user.Username); count >= MaxSessionsPerUser {
-		// Revoke oldest session
 		RevokeOldestUserSession(user.Username)
 	}
 
-	// Generate session ID
 	sessionID, err := GenerateSecureToken(SessionTokenLength)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to generate session ID: %w", err)
 	}
 
-	// Generate refresh token
 	refreshToken, err := GenerateSecureToken(RefreshTokenLength)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to generate refresh token: %w", err)
 	}
 
-	// Generate unique JWT ID for revocation
 	jwtID, err := GenerateJWTID()
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to generate JWT ID: %w", err)
 	}
 
-	// Create JWT token
 	expiresAt := time.Now().Add(DefaultSessionTimeout)
 	jwtToken, err := createJWTToken(sessionID, user, jwtID, expiresAt)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create JWT token: %w", err)
 	}
 
-	// Create session object
 	session := &Session{
 		ID:           sessionID,
 		User:         user,
@@ -259,12 +219,10 @@ func CreateSession(user User, ip, userAgent string) (*Session, string, error) {
 		JWTID:        jwtID,
 	}
 
-	// Store session
 	if !sessions.Set(sessionID, session) {
 		return nil, "", errors.New("too many active sessions")
 	}
 
-	// Store refresh token
 	refreshTokenData := map[string]interface{}{
 		"session_id": sessionID,
 		"expires_at": time.Now().Add(RefreshTokenTimeout),
@@ -279,7 +237,6 @@ func CreateSession(user User, ip, userAgent string) (*Session, string, error) {
 	return session, jwtToken, nil
 }
 
-// createJWTToken creates a JWT token with custom claims
 func createJWTToken(sessionID string, user User, jwtID string, expiresAt time.Time) (string, error) {
 	claims := JWTClaims{
 		SessionID: sessionID,
@@ -301,23 +258,18 @@ func createJWTToken(sessionID string, user User, jwtID string, expiresAt time.Ti
 	return token.SignedString(jwtSigningKey)
 }
 
-// ValidateSession validates a session token and returns the session
 func ValidateSession(tokenString, ip, userAgent string) (*Session, error) {
-	// Parse and validate JWT token with full claims validation
 	claims, err := parseAndValidateJWT(tokenString)
 	if err != nil {
 		return nil, fmt.Errorf("invalid token: %w", err)
 	}
 
-	// Check if token has been revoked
 	if tokenBlacklist.IsTokenRevoked(claims.JWTID) {
 		return nil, errors.New("token revoked")
 	}
 
-	// Retrieve session
 	sessionRaw, exists := sessions.Get(claims.SessionID)
 	if !exists {
-		// Perform dummy operation to prevent timing attacks
 		bcrypt.CompareHashAndPassword([]byte("$2a$10$dummyHash"), []byte("dummyPassword"))
 		return nil, errors.New("session not found")
 	}
@@ -330,41 +282,33 @@ func ValidateSession(tokenString, ip, userAgent string) (*Session, error) {
 	session.mu.Lock()
 	defer session.mu.Unlock()
 
-	// Check if session is revoked
 	if session.IsRevoked {
 		return nil, errors.New("session revoked")
 	}
 
-	// Check if session has expired
 	if time.Now().After(session.ExpiresAt) {
 		RemoveSession(session.ID)
 		return nil, errors.New("session expired")
 	}
 
-	// Verify IP address (allow same subnet)
-	if session.IP != ip { // Replace the isSameSubnet call
+	if session.IP != ip {
 		LogSessionEvent(session.User.Username, ip, "IP_MISMATCH")
 		RevokeSession(session.ID)
 		return nil, errors.New("IP address changed - session revoked")
 	}
 
-	// Verify user agent (optional but recommended)
 	if session.UserAgent != "" && session.UserAgent != userAgent {
 		LogSessionEvent(session.User.Username, ip, "USER_AGENT_MISMATCH")
-		// Don't revoke immediately, just log for investigation
 	}
 
-	// Update last active time
 	session.LastActive = time.Now()
 	sessions.Store(session.ID, session)
 
 	return session, nil
 }
 
-// parseAndValidateJWT parses and validates a JWT token with full claims validation
 func parseAndValidateJWT(tokenString string) (*JWTClaims, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &JWTClaims{}, func(token *jwt.Token) (interface{}, error) {
-		// Validate signing method
 		if token.Method.Alg() != JWTSigningMethod {
 			return nil, errors.New("unexpected signing method")
 		}
@@ -376,17 +320,14 @@ func parseAndValidateJWT(tokenString string) (*JWTClaims, error) {
 	}
 
 	if claims, ok := token.Claims.(*JWTClaims); ok && token.Valid {
-		// Validate all standard claims
 		if err := claims.Valid(); err != nil {
 			return nil, fmt.Errorf("invalid claims: %w", err)
 		}
 
-		// Custom validation for issuer
 		if !claims.VerifyIssuer(JWTIssuer, true) {
 			return nil, errors.New("invalid issuer")
 		}
 
-		// Custom validation for audience
 		if !claims.VerifyAudience(JWTAudience, true) {
 			return nil, errors.New("invalid audience")
 		}
@@ -397,9 +338,7 @@ func parseAndValidateJWT(tokenString string) (*JWTClaims, error) {
 	return nil, errors.New("invalid token claims")
 }
 
-// RefreshSession refreshes an expired session using a refresh token
 func RefreshSession(refreshToken, ip, userAgent string) (*Session, string, error) {
-	// Retrieve refresh token data
 	refreshDataRaw, exists := refreshTokenStore.Get(refreshToken)
 	if !exists {
 		return nil, "", errors.New("invalid refresh token")
@@ -410,13 +349,11 @@ func RefreshSession(refreshToken, ip, userAgent string) (*Session, string, error
 	expiresAt := refreshData["expires_at"].(time.Time)
 	oldJWTID := refreshData["jwt_id"].(string)
 
-	// Check if refresh token has expired
 	if time.Now().After(expiresAt) {
 		refreshTokenStore.Delete(refreshToken)
 		return nil, "", errors.New("refresh token expired")
 	}
 
-	// Retrieve session
 	sessionRaw, exists := sessions.Get(sessionID)
 	if !exists {
 		refreshTokenStore.Delete(refreshToken)
@@ -431,36 +368,30 @@ func RefreshSession(refreshToken, ip, userAgent string) (*Session, string, error
 	session.mu.Lock()
 	defer session.mu.Unlock()
 
-	// Check if session is revoked
 	if session.IsRevoked {
 		refreshTokenStore.Delete(refreshToken)
 		return nil, "", errors.New("session revoked")
 	}
 
-	// Revoke the old JWT token
 	tokenBlacklist.RevokeToken(oldJWTID, session.ExpiresAt)
 
-	// Generate new JWT ID
 	newJWTID, err := GenerateJWTID()
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to generate new JWT ID: %w", err)
 	}
 
-	// Create new JWT token
 	newExpiresAt := time.Now().Add(DefaultSessionTimeout)
 	newToken, err := createJWTToken(session.ID, session.User, newJWTID, newExpiresAt)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create new token: %w", err)
 	}
 
-	// Update session
 	session.ExpiresAt = newExpiresAt
 	session.LastActive = time.Now()
 	session.Token = newToken
 	session.JWTID = newJWTID
 	sessions.Store(session.ID, session)
 
-	// Invalidate old refresh token and generate a new one
 	refreshTokenStore.Delete(refreshToken)
 	newRefreshToken, err := GenerateSecureToken(RefreshTokenLength)
 	if err != nil {
@@ -483,7 +414,6 @@ func RefreshSession(refreshToken, ip, userAgent string) (*Session, string, error
 	return session, newToken, nil
 }
 
-// RevokeSession revokes a session immediately and blacklists the token
 func RevokeSession(sessionID string) {
 	sessionRaw, exists := sessions.Get(sessionID)
 	if exists {
@@ -491,21 +421,18 @@ func RevokeSession(sessionID string) {
 		session.mu.Lock()
 		session.IsRevoked = true
 
-		// Add the JWT token to blacklist
 		if session.JWTID != "" {
 			tokenBlacklist.RevokeToken(session.JWTID, session.ExpiresAt)
 		}
 
 		session.mu.Unlock()
 
-		// Remove refresh token
 		refreshTokenStore.Delete(session.RefreshToken)
 
 		LogSessionEvent(session.User.Username, session.IP, "REVOKED")
 	}
 }
 
-// RevokeTokenByJWTID revokes a specific JWT token by its ID
 func RevokeTokenByJWTID(jwtID string, expiresAt time.Time) {
 	tokenBlacklist.RevokeToken(jwtID, expiresAt)
 }
@@ -522,7 +449,6 @@ func RemoveSession(sessionID string) {
 	}
 }
 
-// RevokeAllUserSessions revokes all sessions for a specific user
 func RevokeAllUserSessions(username string) {
 	sessions.Range(func(key string, value interface{}) bool {
 		session := value.(*Session)
@@ -533,7 +459,6 @@ func RevokeAllUserSessions(username string) {
 	})
 }
 
-// RevokeOldestUserSession revokes the oldest session for a user
 func RevokeOldestUserSession(username string) {
 	var oldestSession *Session
 	var oldestTime time.Time
@@ -554,7 +479,6 @@ func RevokeOldestUserSession(username string) {
 	}
 }
 
-// CountUserSessions counts active sessions for a user
 func CountUserSessions(username string) int {
 	count := 0
 	sessions.Range(func(key string, value interface{}) bool {
@@ -567,7 +491,6 @@ func CountUserSessions(username string) int {
 	return count
 }
 
-// cleanupExpiredSessions periodically cleans up expired sessions
 func cleanupExpiredSessions() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
@@ -575,7 +498,6 @@ func cleanupExpiredSessions() {
 	for range ticker.C {
 		now := time.Now()
 
-		// Clean up expired sessions
 		sessions.Range(func(key string, value interface{}) bool {
 			session := value.(*Session)
 			if now.After(session.ExpiresAt) || session.IsRevoked {
@@ -584,7 +506,6 @@ func cleanupExpiredSessions() {
 			return true
 		})
 
-		// Clean up expired refresh tokens
 		refreshTokenStore.Range(func(key string, value interface{}) bool {
 			refreshData := value.(map[string]interface{})
 			expiresAt := refreshData["expires_at"].(time.Time)
@@ -596,7 +517,6 @@ func cleanupExpiredSessions() {
 	}
 }
 
-// LoadSecretsFromEnv loads secrets from environment variables
 func (sm *SecretManager) LoadSecretsFromEnv(prefix string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -612,7 +532,6 @@ func (sm *SecretManager) LoadSecretsFromEnv(prefix string) {
 	}
 }
 
-// GenerateAPISecrets generates secure API token and secret pairs
 func GenerateAPISecrets() (string, string, error) {
 	token, err := GenerateSecureToken(16)
 	if err != nil {
@@ -627,14 +546,12 @@ func GenerateAPISecrets() (string, string, error) {
 	return token, secret, nil
 }
 
-// VerifyAPISecrets verifies API token and secret
 func VerifyAPISecrets(userID, token, secret string) (bool, error) {
 	users, err := loadUsers()
 	if err != nil {
 		return false, err
 	}
 
-	// Find the user
 	var user *User
 	for _, u := range users {
 		if u.Username == userID {
@@ -654,38 +571,12 @@ func VerifyAPISecrets(userID, token, secret string) (bool, error) {
 	return VerifyAPISecret(user.APISecret, secret), nil
 }
 
-// Helper function to check if two IPs are in the same subnet
-func isSameSubnet(ip1, ip2 net.IP, maskBits int) bool {
-	if ip1 == nil || ip2 == nil {
-		return false
-	}
-
-	if len(ip1) != len(ip2) {
-		return false
-	}
-
-	mask := net.CIDRMask(maskBits, len(ip1)*8)
-	for i := 0; i < len(ip1); i++ {
-		if (ip1[i] & mask[i]) != (ip2[i] & mask[i]) {
-			return false
-		}
-	}
-
-	return true
-}
-
-func validateSessionIP(sessionIP, currentIP string) bool {
-	return sessionIP == currentIP // Exact match required
-}
-
-// GetTokenBlacklistSize returns the number of tokens in the blacklist
 func GetTokenBlacklistSize() int {
 	tokenBlacklist.mu.RLock()
 	defer tokenBlacklist.mu.RUnlock()
 	return len(tokenBlacklist.revokedTokens)
 }
 
-// IsJWTRevoked checks if a JWT token is revoked by its ID
 func IsJWTRevoked(jwtID string) bool {
 	return tokenBlacklist.IsTokenRevoked(jwtID)
 }

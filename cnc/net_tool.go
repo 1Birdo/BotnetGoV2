@@ -67,7 +67,6 @@ type UserQuota struct {
 	LastReset            time.Time
 }
 
-// Global variables
 var (
 	LoadingAnimation = Animation{
 		frames: []string{
@@ -143,7 +142,6 @@ var (
 	maxConnectionsPerIP = 5
 )
 
-// Animation methods
 func (a *Animation) Play(conn net.Conn, duration time.Duration, message string) {
 	endTime := time.Now().Add(duration)
 	frameIndex := 0
@@ -178,7 +176,6 @@ func (a *Animation) PlayCentered(conn net.Conn, duration time.Duration, message 
 	conn.Write([]byte("\033[?25h"))
 }
 
-// User level methods
 func (user *User) GetLevel() Level {
 	switch user.Level {
 	case "Owner":
@@ -194,7 +191,6 @@ func (user *User) GetLevel() Level {
 	}
 }
 
-// Utility functions for rendering
 func writeError(conn net.Conn, msg string) {
 	conn.Write([]byte(fmt.Sprintf("\x1b[38;5;196m[ERROR]\x1b[0m %s\r\n", msg)))
 }
@@ -255,7 +251,6 @@ func FadeText(text string, conn net.Conn) {
 	conn.Write([]byte("\033[0m\033[?25h"))
 }
 
-// GIF handling functions
 func gifs(filename string, client net.Conn) {
 	filePath := filepath.Join("data/gifs", filepath.Base(filename))
 	if !strings.HasSuffix(filePath, ".tfx") {
@@ -330,9 +325,22 @@ func listGifs(client net.Conn) {
 
 func gifCommandHandler(args []string, client net.Conn) {
 	if len(args) < 2 {
-		client.Write([]byte("Usage: gif <filename.tfx> or gif list\r\n"))
+		client.Write([]byte("\033[2J\033[H"))
+		client.Write([]byte("\033[3J\033[H\033[2J"))
+		client.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
+		client.Write([]byte("\r\n"))
+		client.Write([]byte("\x1b[38;5;231m╭═══════════════════════════════════════════════╦══════════════════════════════╮\n\r"))
+		client.Write([]byte("\x1b[38;5;231m║              § \x1b[38;5;51mTFX Animation Help\x1b[38;5;231m §           ║ ╔══════════════════════════╗ ║\n\r"))
+		client.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣ ║       USAGE GUIDE        ║ ║\n\r"))
+		client.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● Available Commands\x1b[38;5;231m                          ║ ║     ► gif list           ║ ║\n\r"))
+		client.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣ ║     ► gif <filename>     ║ ║\n\r"))
+		client.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m gif list    - Show available animations   ║ ║                          ║ ║\n\r"))
+		client.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m gif <file> - Play specific .tfx file      ║ ║     ════════════════     ║ ║\n\r"))
+		client.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Example:   gif explosion.tfx              ║ ║     .TFX EXTENSION       ║ ║\n\r"))
+		client.Write([]byte("\x1b[38;5;231m╰═══════════════════════════════════════════════╩═╩════════════════════════════╝  \n\r"))
 		return
 	}
+
 	command := strings.ToLower(args[1])
 
 	if command == "list" {
@@ -341,21 +349,45 @@ func gifCommandHandler(args []string, client net.Conn) {
 	}
 
 	filename := args[1]
-	// Validate filename format
 	if !ValidateFilename(filename) {
-		writeError(client, "Invalid filename. Only alphanumeric names with .tfx extension are allowed.")
+		client.Write([]byte("\033[2J\033[H"))
+		client.Write([]byte("\033[3J\033[H\033[2J"))
+		client.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
+		client.Write([]byte("\r\n"))
+		client.Write([]byte("\x1b[38;5;231m╭═══════════════════════════════════════════════╦══════════════════════════════╮\n\r"))
+		client.Write([]byte("\x1b[38;5;231m║              § \x1b[38;5;51mFile Validation Error\x1b[38;5;231m §            ║   ┌────────────────────┐   ║\n\r"))
+		client.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣   │    INVALID FILE    │   ║\n\r"))
+		client.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● Filename Security Check\x1b[38;5;231m                     ║   │     REJECTED      │   ║\n\r"))
+		client.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣   └────────────────────┘   ║\n\r"))
+		client.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Error:     \x1b[38;5;196mInvalid filename format\x1b[38;5;231m           ║   ░░░░░░░░░░░░░░░░░░░░░░   ║\r\n"))
+		client.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Required:  \x1b[38;5;196mAlphanumeric + .tfx\x1b[38;5;231m               ║   ────────────────────   ║\r\n"))
+		client.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Got:       \x1b[38;5;196m" + filename + "\x1b[38;5;231m                          ║   ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒   ║\r\n"))
+		client.Write([]byte("\x1b[38;5;231m╰═══════════════════════════════════════════════╩══════════════════════════════╯\n\r"))
 		return
 	}
 
 	if !strings.HasSuffix(filename, ".tfx") {
 		filename += ".tfx"
 	}
-	client.Write([]byte("\033[38;5;214mDisplaying: " + filename + "\033[0m\r\n"))
+
+	client.Write([]byte("\033[2J\033[H"))
+	client.Write([]byte("\033[3J\033[H\033[2J"))
+	client.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
+	client.Write([]byte("\r\n"))
+	client.Write([]byte("\x1b[38;5;231m╭═══════════════════════════════════════════════╦══════════════════════════════╮\n\r"))
+	client.Write([]byte("\x1b[38;5;231m║               § \x1b[38;5;51mLoading Animation\x1b[38;5;231m §              ║ ╔══════════════════════════╗ ║\n\r"))
+	client.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣ ║     PREPARING TFX     ║ ║\n\r"))
+	client.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● Animation Player Startup\x1b[38;5;231m                     ║ ║   [■■■■■■■■■■■■■■■■]   ║ ║\n\r"))
+	client.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╬ ╚══════════════════════════╝ ║\n\r"))
+	client.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m File:      \x1b[38;5;82m" + filename + "\x1b[38;5;231m                          ║                            ║\r\n"))
+	client.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Status:    \x1b[38;5;82mINITIALIZING PLAYER\x1b[38;5;231m                 ║                            ║\r\n"))
+	client.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Display:   \x1b[38;5;82mSTANDARD TERMINAL\x1b[38;5;231m                   ║                            ║\r\n"))
+	client.Write([]byte("\x1b[38;5;231m╰═══════════════════════════════════════════════╩══════════════════════════════╯\n\r"))
+
 	time.Sleep(800 * time.Millisecond)
 	gifs(filename, client)
 }
 
-// Connection management functions
 func CheckConnectionLimit(ip string) bool {
 	ipConnectionMutex.Lock()
 	defer ipConnectionMutex.Unlock()
@@ -398,7 +430,6 @@ func constantTimeCompare(a, b string) bool {
 func AuthUser(username, password string) (bool, *User) {
 	usersFile, err := os.ReadFile("data/json/users.json")
 	if err != nil {
-		// Use secure compare instead of dummy operations
 		secureCompare("dummy", "dummy") // Prevent timing attacks
 		return false, nil
 	}
@@ -465,7 +496,6 @@ func loadUsers() ([]User, error) {
 	return users, nil
 }
 
-// Utility functions
 func getConsoleTitleAnsi(title string) string {
 	return "\u001B]0;" + title + "\a"
 }
@@ -514,7 +544,6 @@ func GenerateAPITokenPair() (string, string, error) {
 	return tok, sec, nil
 }
 
-// Rate limiting functions
 func CheckAuthRateLimit(ip string) bool {
 	attemptRaw, exists := authAttempts.Load(ip)
 	if !exists {
@@ -540,7 +569,6 @@ func ResetAuthAttempts(ip string) {
 	authAttempts.Delete(ip)
 }
 
-// Validation functions
 func ValidateIP(ipStr string) bool {
 	ip := net.ParseIP(ipStr)
 	if ip == nil {
@@ -667,7 +695,6 @@ func CleanupSessions() {
 	}
 }
 
-// User quota management functions
 func GetUserQuota(username string) *UserQuota {
 	quotaRaw, exists := userQuotas.Load(username)
 	var quota *UserQuota
@@ -749,7 +776,6 @@ func CleanupAuthAttempts() {
 }
 
 func init() {
-	// Initialize sessions before using it
 	sessions = NewBoundedMap(MaxSessions)
 
 	go CleanupSessions()
