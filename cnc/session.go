@@ -580,3 +580,11 @@ func GetTokenBlacklistSize() int {
 func IsJWTRevoked(jwtID string) bool {
 	return tokenBlacklist.IsTokenRevoked(jwtID)
 }
+
+func ValidateSessionAndGetUser(tokenString, ip, userAgent string) (*Session, *User, error) {
+	session, err := ValidateSession(tokenString, ip, userAgent)
+	if err != nil {
+		return nil, nil, err
+	}
+	return session, &session.User, nil
+}
