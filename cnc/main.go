@@ -746,112 +746,7 @@ func handleRequest(conn *tls.Conn) {
 					conn.Write([]byte("\x1b[38;5;231m╰═══════════════════════════════════════════════╩══════════════════════════════╯\n\r"))
 
 				case "botstatus":
-					conn.Write([]byte("\033[2J\033[H"))
-					conn.Write([]byte("\033[3J\033[H\033[2J"))
-					conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
-
-					botInfos := GetActiveBotInfos()
-					conn.Write([]byte("\r\n"))
-					conn.Write([]byte("\x1b[38;5;231m╭═══════════════════════════════════════════════╦══════════════════════════════╮\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║              § \x1b[38;5;51mBot Telemetry Dashboard\x1b[38;5;231m §      ║    ┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌─┐   ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╣    │ │ │ │ │ │ │ │ │ │ │ │   ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● Direct bot-reported metrics\x1b[38;5;231m             ║    └─┘ └─┘ └─┘ └─┘ └─┘ └─┘   ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╬══════════════════════════════╣\n\r"))
-
-					totalActive := len(botInfos)
-					diagnosed := 0
-					osCounts := make(map[string]int)
-					for _, bot := range botInfos {
-						osName := strings.TrimSpace(bot.SystemInfo.OS)
-						if osName != "" {
-							diagnosed++
-							osCounts[osName]++
-						}
-					}
-
-					uniqueOS := len(osCounts)
-					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Active Bots:            \x1b[38;5;82m%-20d\x1b[38;5;231m║ ╔══════════════════════════╗ ║\r\n", totalActive)))
-					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m✪\x1b[38;5;231m Diagnostics received:   \x1b[38;5;82m%-20d\x1b[38;5;231m║ ║  TELEMETRY CONFIRMED   ║ ║\r\n", diagnosed)))
-					conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m❃\x1b[38;5;231m Unique OS fingerprints:  \x1b[38;5;82m%-20d\x1b[38;5;231m║ ╚══════════════════════════╝ ║\r\n", uniqueOS)))
-					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╩══════════════════════════════╣\n\r"))
-
-					if totalActive == 0 {
-						conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;196mNo bots are currently reporting telemetry\x1b[38;5;231m                     ║\n\r"))
-						conn.Write([]byte("\x1b[38;5;231m╰══════════════════════════════════════════════════════════════════════════════╯\n\r"))
-						break
-					}
-
-					sort.Slice(botInfos, func(i, j int) bool {
-						return botInfos[i].LastPing.After(botInfos[j].LastPing)
-					})
-
-					conn.Write([]byte("\x1b[38;5;231m║ \x1b[38;5;45m● Bot Telemetry Snapshot\x1b[38;5;231m                               ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m╠══════════════════════════════════════════════════════════════════════════╢\n\r"))
-
-					maxDisplay := 5
-					if len(botInfos) < maxDisplay {
-						maxDisplay = len(botInfos)
-					}
-
-					for i := 0; i < maxDisplay; i++ {
-						bot := botInfos[i]
-						displayID := bot.ID
-						if len(displayID) > 16 {
-							displayID = displayID[:13] + "..."
-						}
-						safeIP := bot.IP
-						if safeIP == "" {
-							safeIP = "pending"
-						}
-						pingStr := "n/a"
-						if bot.PingMs > 0 {
-							pingStr = fmt.Sprintf("%dms", bot.PingMs)
-						}
-						osName := strings.TrimSpace(bot.SystemInfo.OS)
-						if osName == "" {
-							osName = "unknown"
-						}
-						arch := strings.TrimSpace(bot.SystemInfo.Arch)
-						if arch == "" {
-							arch = "?"
-						}
-						uptime := strings.TrimSpace(bot.SystemInfo.Uptime)
-						if uptime == "" {
-							uptime = "n/a"
-						}
-
-						conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   \x1b[38;5;45m%-16s\x1b[38;5;231m | IP: %-15s | OS: %-12s | Arch: %-5s | Ping: %-6s║\r\n",
-							displayID, safeIP, osName, arch, pingStr)))
-
-						if bot.SystemInfo.CPU != "" || bot.SystemInfo.RAM != "" || bot.SystemInfo.Load1 != "" {
-							cpu := strings.TrimSpace(bot.SystemInfo.CPU)
-							if cpu == "" {
-								cpu = "n/a"
-							}
-							ram := strings.TrimSpace(bot.SystemInfo.RAM)
-							if ram == "" {
-								ram = "n/a"
-							}
-							load := bot.SystemInfo.Load1
-							if load == "" {
-								load = "-"
-							}
-							disk := bot.SystemInfo.Disk
-							if disk == "" {
-								disk = "-"
-							}
-							conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║      CPU: %-20s RAM: %-10s Uptime: %-14s Load1: %-6s Disk: %-8s║\r\n",
-								cpu, ram, uptime, load, disk)))
-						} else {
-							conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║      Uptime: %-26s                                  ║\r\n", uptime)))
-						}
-					}
-
-					if len(botInfos) > maxDisplay {
-						conn.Write([]byte(fmt.Sprintf("\x1b[38;5;231m║   ... and %d more bots reporting ...\x1b[38;5;231m                     ║\r\n", len(botInfos)-maxDisplay)))
-					}
-
-					conn.Write([]byte("\x1b[38;5;231m╰══════════════════════════════════════════════════════════════════════════════╯\n\r"))
+					renderBotTelemetryDashboard(conn)
 
 				case "stopattack":
 					attackLock.Lock()
@@ -1424,6 +1319,238 @@ func GetAllOngoingAttacks() []Attack {
 	ongoingAPIAttacksMutex.RUnlock()
 
 	return combined
+}
+
+func renderBotTelemetryDashboard(conn net.Conn) {
+	conn.Write([]byte("\033[2J\033[H"))
+	conn.Write([]byte("\033[3J\033[H\033[2J"))
+	conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
+
+	botInfos := GetActiveBotInfos()
+	conn.Write([]byte("\r\n"))
+
+	totalActive := len(botInfos)
+	diagnosed := 0
+	osCounts := make(map[string]int)
+	for _, bot := range botInfos {
+		osName := strings.TrimSpace(bot.SystemInfo.OS)
+		if osName != "" {
+			diagnosed++
+			osCounts[osName]++
+		}
+	}
+	uniqueOS := len(osCounts)
+
+	if totalActive == 0 {
+		conn.Write([]byte("\x1b[38;5;231m╭══════════════════════════════════════════════════════════════════════════════╮\n\r"))
+		writeDashboardLine(conn, "   § Bot Telemetry Dashboard §")
+		conn.Write([]byte("\x1b[38;5;231m╠══════════════════════════════════════════════════════════════════════════════╣\n\r"))
+		summary := fmt.Sprintf("   Active Bots: 0   Diagnostics: %d   Unique OS: %d", diagnosed, uniqueOS)
+		writeDashboardLine(conn, summary)
+		writeDashboardLine(conn, "   No bots are currently reporting telemetry.")
+		conn.Write([]byte("\x1b[38;5;231m╰══════════════════════════════════════════════════════════════════════════════╯\n\r"))
+		return
+	}
+
+	sort.Slice(botInfos, func(i, j int) bool {
+		return botInfos[i].LastPing.After(botInfos[j].LastPing)
+	})
+
+	const (
+		terminalHeight        = 24
+		rowsPerBot            = 2
+		dashboardOverheadRows = 13
+	)
+	availableRows := terminalHeight - dashboardOverheadRows
+	if availableRows < rowsPerBot {
+		availableRows = rowsPerBot
+	}
+	botsPerPage := availableRows / rowsPerBot
+	if botsPerPage < 1 {
+		botsPerPage = 1
+	}
+	if botsPerPage > totalActive {
+		botsPerPage = totalActive
+	}
+
+	totalPages := 1
+	if botsPerPage > 0 {
+		totalPages = (totalActive + botsPerPage - 1) / botsPerPage
+	}
+
+	statusMessage := ""
+	page := 0
+
+	for {
+		drawBotTelemetryPage(conn, botInfos, page, botsPerPage, totalPages, totalActive, diagnosed, uniqueOS, statusMessage)
+
+		if totalPages <= 1 {
+			break
+		}
+
+		conn.Write([]byte("\x1b[38;5;51mNavigation [n]ext, [p]rev, [q]uit (Enter to return): \x1b[0m"))
+		choice, err := getFromConn(conn)
+		if err != nil {
+			break
+		}
+		input := strings.TrimSpace(strings.ToLower(choice))
+		if input == "" || input == "q" || input == "quit" || input == "exit" {
+			break
+		}
+		switch input {
+		case "n", "next":
+			if page+1 < totalPages {
+				page++
+				statusMessage = ""
+			} else {
+				statusMessage = "Already on last page."
+			}
+		case "p", "prev", "previous":
+			if page > 0 {
+				page--
+				statusMessage = ""
+			} else {
+				statusMessage = "Already on first page."
+			}
+		default:
+			statusMessage = "Unknown option. Use n, p, or q."
+		}
+	}
+}
+
+func drawBotTelemetryPage(conn net.Conn, bots []BotInfo, page, botsPerPage, totalPages, totalActive, diagnosed, uniqueOS int, statusMessage string) {
+	conn.Write([]byte("\033[H\033[2J"))
+	conn.Write([]byte("\r\n"))
+
+	conn.Write([]byte("\x1b[38;5;231m╭══════════════════════════════════════════════════════════════════════════════╮\n\r"))
+	writeDashboardLine(conn, "   § Bot Telemetry Dashboard §")
+	conn.Write([]byte("\x1b[38;5;231m╠══════════════════════════════════════════════════════════════════════════════╣\n\r"))
+
+	summary := fmt.Sprintf("   Active Bots: %-5d   Diagnostics: %-5d   Unique OS: %-5d", totalActive, diagnosed, uniqueOS)
+	writeDashboardLine(conn, summary)
+	if totalPages > 1 && statusMessage == "" {
+		statusMessage = "Use n (next), p (prev), q (quit) to navigate."
+	}
+	if statusMessage != "" {
+		writeDashboardLine(conn, "   Info: "+statusMessage)
+	} else {
+		writeDashboardLine(conn, "")
+	}
+
+	conn.Write([]byte("\x1b[38;5;231m╠══════════════════════════════════════════════════════════════════════════════╣\n\r"))
+	snapshotHeading := fmt.Sprintf("   Bot Telemetry Snapshot (Page %d/%d)", page+1, totalPages)
+	writeDashboardLine(conn, snapshotHeading)
+	conn.Write([]byte("\x1b[38;5;231m╠══════════════════════════════════════════════════════════════════════════════╣\n\r"))
+
+	start := page * botsPerPage
+	if start > len(bots) {
+		start = len(bots)
+	}
+	end := start + botsPerPage
+	if end > len(bots) {
+		end = len(bots)
+	}
+	pageBots := bots[start:end]
+
+	for _, bot := range pageBots {
+		idField := truncateWithEllipsis(strings.TrimSpace(bot.ID), 16)
+		if idField == "" {
+			idField = "unknown"
+		}
+		ipField := truncateWithEllipsis(strings.TrimSpace(bot.IP), 15)
+		if ipField == "" {
+			ipField = "pending"
+		}
+		osField := truncateWithEllipsis(strings.TrimSpace(bot.SystemInfo.OS), 12)
+		if osField == "" {
+			osField = "unknown"
+		}
+		archField := truncateWithEllipsis(strings.TrimSpace(bot.SystemInfo.Arch), 6)
+		if archField == "" {
+			archField = "?"
+		}
+
+		pingField := "-"
+		if bot.PingMs > 0 {
+			pingField = fmt.Sprintf("%dms", bot.PingMs)
+		}
+		pingField = truncateWithEllipsis(pingField, 5)
+
+		statusField := strings.ToUpper(strings.TrimSpace(bot.Status))
+		if statusField == "" {
+			statusField = "N/A"
+		}
+		statusField = truncateWithEllipsis(statusField, 6)
+
+		cpuField := metricValue(bot.SystemInfo.CPU, 7, "-")
+		ramField := metricValue(bot.SystemInfo.RAM, 7, "-")
+		uptimeField := metricValue(bot.SystemInfo.Uptime, 8, "-")
+		loadField := formatLoadField(bot.SystemInfo)
+		diskField := metricValue(bot.SystemInfo.Disk, 7, "-")
+
+		line1 := fmt.Sprintf("   ID:%-16s IP:%-15s OS:%-12s ARCH:%-6s", idField, ipField, osField, archField)
+		writeDashboardLine(conn, line1)
+
+		line2 := fmt.Sprintf("   P:%-5s S:%-6s CPU:%-7s RAM:%-7s U:%-8s L:%-8s D:%-7s", pingField, statusField, cpuField, ramField, uptimeField, loadField, diskField)
+		writeDashboardLine(conn, line2)
+	}
+
+	for i := len(pageBots); i < botsPerPage; i++ {
+		writeDashboardLine(conn, "")
+		writeDashboardLine(conn, "")
+	}
+
+	conn.Write([]byte("\x1b[38;5;231m╠══════════════════════════════════════════════════════════════════════════════╣\n\r"))
+	navLine := fmt.Sprintf("   Page %d/%d", page+1, totalPages)
+	if totalPages > 1 {
+		navLine += "   [n] Next  [p] Prev  [q] Quit"
+	} else {
+		navLine += "   (Return to exit)"
+	}
+	writeDashboardLine(conn, navLine)
+	conn.Write([]byte("\x1b[38;5;231m╰══════════════════════════════════════════════════════════════════════════════╯\n\r"))
+}
+
+func writeDashboardLine(conn net.Conn, content string) {
+	trimmed := truncateWithEllipsis(content, 78)
+	formatted := fmt.Sprintf("%-78s", trimmed)
+	conn.Write([]byte("\x1b[38;5;231m║" + formatted + "║\n\r"))
+}
+
+func truncateWithEllipsis(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	if max <= 3 {
+		return string(runes[:max])
+	}
+	return string(runes[:max-3]) + "..."
+}
+
+func metricValue(value string, max int, fallback string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		trimmed = fallback
+	}
+	return truncateWithEllipsis(trimmed, max)
+}
+
+func formatLoadField(info SystemInfo) string {
+	loads := []string{strings.TrimSpace(info.Load1), strings.TrimSpace(info.Load5), strings.TrimSpace(info.Load15)}
+	var parts []string
+	for _, v := range loads {
+		if v != "" {
+			parts = append(parts, v)
+		}
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return truncateWithEllipsis(strings.Join(parts, "/"), 8)
 }
 
 func ScheduleDiagnosticRequests() {
