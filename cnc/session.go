@@ -588,3 +588,12 @@ func ValidateSessionAndGetUser(tokenString, ip, userAgent string) (*Session, *Us
 	}
 	return session, &session.User, nil
 }
+
+func RevokeSessionByToken(tokenString string) {
+	claims, err := parseAndValidateJWT(tokenString)
+	if err != nil {
+		return
+	}
+
+	RevokeSession(claims.SessionID)
+}
