@@ -9,7 +9,6 @@ This project is a botnet developed in Go, consisting of a Command and Control (C
 The project is organized into the following main directories:
 
 ```
-/
 ├── cnc/
 │    │            # C2 Server Source Code and Data  
 │    ├── main.go    # C2 server entry point
