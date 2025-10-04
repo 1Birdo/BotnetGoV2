@@ -61,6 +61,8 @@ Due to its how it Communicates Securely.
   </tr>
 </table>
 
+| **Admin Commands**<br>Usage examples<br><video src="https://github.com/user-attachments/assets/raw/e2b9535f-5ede-401c-bb2d-da97b601a118" controls width="100%"></video> | **Attack / stress Example**<br>Filtered traffic demo<br><video src="https://github.com/user-attachments/assets/raw/531f09ef-ae28-4bcc-aae4-aaa564162acd" controls width="100%"></video> | |
+
 ---
 
 ## 🛡️ Core Security & Architecture
