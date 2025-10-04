@@ -7,8 +7,7 @@ An enhanced, high-performance C2 (Command and Control) system built in Go (Golan
 
 ^ **Please Click** For a actual Demo / Visual Look
 
-![Code_4AQcw8Fo1Q](https://github.com/user-attachments/assets/646c2a92-220f-4003-b981-44d915313e44)
-
+<img src="https://github.com/user-attachments/assets/646c2a92-220f-4003-b981-44d915313e44" width="400"/>
 
 ## 🖥️ C2 Closeups
 <table>
