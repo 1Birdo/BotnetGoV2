@@ -147,7 +147,7 @@ The system has a simple role-based system to control who can do what.
 | **Owner** | Full System Control | The boss. Can manage everything and everyone. |
 | **Admin** | Elevated Administration | Manages users and can authorize all attack methods. |
 | **Pro** | Advanced Operator | Can use a powerful subset of high-impact attack methods. |
-| **Basic** | Standard Operator | Can use fundamental methods like `!udpflood` and `!http`. |
+| **Basic** | Standard Operator | Can use fundamental methods like `!udp` and `!http`. |
 
 ## 🤖 For Advanced Users: The REST API
 
