@@ -2,11 +2,6 @@
 
 An enhanced, high-performance C2 (Command and Control) system built in Go (Golang), focusing on security, concurrency, and robust resource management.
 
-[![Demo Preview]](https://github.com/user-attachments/assets/cf1d4a33-b106-4858-ae98-15c67a6d3a43)
-** This Demo is currently Old and the Visuals / UI have been completely revamped. 28/8/25
-
-^ **Please Click** For a actual Demo / Visual Look
-
 ## 🖥️ C2 Closeups
 <table>
   <tr>
@@ -59,6 +54,8 @@ Due to its how it Communicates Securely.
 <a href="https://github.com/user-attachments/assets/7c0a1ad8-73c5-45dc-bcc4-ef36e500a348">
   <img src="https://img.shields.io/badge/▶_Watch_Video-blue?style=for-the-badge" />
 </a>
+^ **Please Click** For a actual Demo / Visual Look
+
 
 
 ---
