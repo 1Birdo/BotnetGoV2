@@ -59,6 +59,8 @@ As an operator, you'll interact with the C&C system through a secure terminal in
 
 The system uses a **Dual Server Architecture** to segregate bot and operator traffic, maximizing stability and control.
 
+> This is technically A **Triple Architecture** if you use / maintain usage of the API. But i dont really count it fully.
+
 ### Architecture Summary
 
 | Component | Purpose | Protocol & Port |
