@@ -3,6 +3,7 @@
 An enhanced, high-performance C2 (Command and Control) system built in Go (Golang), focusing on security, concurrency, and robust resource management.
 
 [![Demo Preview]](https://github.com/user-attachments/assets/cf1d4a33-b106-4858-ae98-15c67a6d3a43)
+<img width="660" height="417" alt="image" src="https://github.com/user-attachments/assets/401c3969-0d9b-4bd4-ae33-e33c83cc8f0a" />
 
 ## 🖥️ C2 Closeups
 
@@ -10,8 +11,8 @@ An enhanced, high-performance C2 (Command and Control) system built in Go (Golan
   <tr>
     <td><img src="https://github.com/user-attachments/assets/652bc9c9-8ec1-4a51-8789-60f765caa06f" width="100%"/></td>
     <td><img src="https://github.com/user-attachments/assets/072342a1-6a15-4b2d-8292-04e26372d738" width="100%"/></td>
-    <td><img src="https://github.com/user-attachments/assets/f5e29468-fdec-4887-94c1-97b33a5ae498" width="100%"/></td>
     <td><img src="https://github.com/user-attachments/assets/8349fcbb-a2b9-4dee-a7ad-131646209f05" width="100%"/></td>
+    <td><img src="https://github.com/user-attachments/assets/401c3969-0d9b-4bd4-ae33-e33c83cc8f0a" width="100%"/></td>
   </tr>
   <tr>
     <td><img src="https://github.com/user-attachments/assets/807fad11-4cb1-4a13-909b-368c2892349b" width="100%"/></td>
