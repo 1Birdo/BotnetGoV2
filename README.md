@@ -3,7 +3,6 @@
 An enhanced, high-performance C2 (Command and Control) system built in Go (Golang), focusing on security, concurrency, and robust resource management.
 
 [![Demo Preview]](https://github.com/user-attachments/assets/cf1d4a33-b106-4858-ae98-15c67a6d3a43)
-<img width="660" height="417" alt="image" src="https://github.com/user-attachments/assets/401c3969-0d9b-4bd4-ae33-e33c83cc8f0a" />
 
 ## 🖥️ C2 Closeups
 
