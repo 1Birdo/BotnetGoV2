@@ -6,7 +6,6 @@ An enhanced, high-performance C2 (Command and Control) system built in Go (Golan
 
 ## 🖥️ C2 Closeups
 
-
 <table>
   <tr>
     <td><img src="https://github.com/user-attachments/assets/9108315d-bfde-43be-bdd7-a563299db175" width="100%"/></td>
@@ -17,7 +16,7 @@ An enhanced, high-performance C2 (Command and Control) system built in Go (Golan
   <tr>
     <td><img src="https://github.com/user-attachments/assets/df4f3bb9-cb84-4772-b066-64ec02984fd5" width="100%"/></td>
     <td><img src="https://github.com/user-attachments/assets/652bc9c9-8ec1-4a51-8789-60f765caa06f" width="100%"/></td>
-    <td><img src="https://github.com/user-attachments/assets/52cdac50-7650-40fa-882e-2a524e562d6e" width="100%"/></td>
+    <td><img src="https://github.com/user-attachments/assets/c9d9da63-daa6-40d4-9911-fe22cd33e13b" width="100%"/></td>
     <td><img src="https://github.com/user-attachments/assets/807fad11-4cb1-4a13-909b-368c2892349b" width="100%"/></td>
   </tr>
 </table>
