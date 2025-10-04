@@ -11,7 +11,7 @@ An enhanced, high-performance C2 (Command and Control) system built in Go (Golan
 <table>
   <tr>
     <td><img src="https://github.com/user-attachments/assets/9108315d-bfde-43be-bdd7-a563299db175" width="100%"/></td>
-    <td><img rrc="https://github.com/user-attachments/assets/1848a6c8-9058-42c1-b8cf-bdb6b1b8f302" width="100%"/></td>
+    <td><img src="https://github.com/user-attachments/assets/1848a6c8-9058-42c1-b8cf-bdb6b1b8f302" width="100%"/></td>
     <td><img src="https://github.com/user-attachments/assets/072342a1-6a15-4b2d-8292-04e26372d738" width="100%"/></td>
     <td><img src="https://github.com/user-attachments/assets/8349fcbb-a2b9-4dee-a7ad-131646209f05" width="100%"/></td>
   </tr>
