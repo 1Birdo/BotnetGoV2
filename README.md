@@ -1,6 +1,8 @@
 # 🔱 BotnetGoV2
 
-An enhanced, high-performance C2 (Command and Control) system built in Go (Golang), focusing on security, concurrency, and robust resource management.
+Welcome to BotnetGo! This is a powerful and secure Command & Control (C&C) system designed for network security testing and resilience validation. It's built to be scalable, secure, and easy to use.
+
+**⚠️ Disclaimer:** This tool is intended for educational and authorized security testing purposes only. Unauthorized use is strictly prohibited.
 
 ## 🖥️ C2 Closeups
 <table>
@@ -18,29 +20,23 @@ An enhanced, high-performance C2 (Command and Control) system built in Go (Golan
   </tr>
 </table>
 
-> ⚠️ **Disclaimer:** This software is for **educational and authorized security research purposes only**. Use in unauthorized or illegal activities is strictly forbidden. Deploy only in controlled laboratory or sanctioned environments.
-
-> To connect to this you Will need either Openssl or ncat, Alternative Tools can be used.
-OpenSSL is more prefered as i use that more to connect / test, then ncat. 
-Due to its how it Communicates Securely.
-
 > 🚫[  **API server / Usage**  ]   If you are look for the API section please check the bottom of the 'Readme.md'
 
 > 🖥️ For the PuTTY variant of this project, please refer to my Alternatives Project for the supported version. The only difference lies in how communication is handled and how the bots are managed.  The Current PuTTY varient of BotnetGoV2 is privated due to some abuse.
 
 ---
 
+## ✨ Key Features
 
-## ✨ Key Capabilities
+*   **High-Performance:** Built with Go for speed and concurrency.
+*   **Secure by Design:** Enforces TLS 1.3, hashed credentials, and JWT for secure sessions.
+*   **Role-Based Access Control (RBAC):** Fine-grained permissions for different user levels.
+*   **Powerful Attack Suite:** A comprehensive set of Layer 4 and Layer 7 attack methods.
+*   **Real-Time Monitoring:** Live diagnostics and health status of all connected bots.
 
-| Feature | Description |
-| :--- | :--- |
-| **High Performance** | Built with **Go** for exceptional concurrency and performance, efficiently managing **thousands of bots** using Go routines. |
-| **Secure Comms** | Custom **binary protocol over TLS 1.3** ensuring encrypted, secure communication resistant to passive detection. |
-| **Robust Security** | Multi-layered **Rate Limiting**, secure **JWT Session Management** with revocation, and extensive **Input Validation**. |
-| **RBAC** | **Role-Based Access Control** system (`rbac.json`) for fine-grained user permissions over attack methods. |
-| **Flexible Control** | Dual control interfaces: **Terminal UI** for operators and a dedicated **REST API** for programmatic integration. |
+## 💻 Getting Started: The Operator Terminal
 
+As an operator, you'll interact with the C&C system through a secure terminal interface. Here are the commands you'll use to manage the botnet and send tasks.
 
 ## 🖥️ Bot Closeups
 <table>
@@ -56,8 +52,6 @@ Due to its how it Communicates Securely.
 </a>
 
 > ^ **Please Click** For a actual Demo / Visual Look
-
-
 
 ---
 
@@ -81,67 +75,84 @@ The system uses a **Dual Server Architecture** to segregate bot and operator tra
 
 ---
 
-## 🛠️ Bot & Attack Management
+## 💻 Getting Started: The Operator Terminal
 
-The system is engineered for reliable diagnostics and powerful attack orchestration.
+As an operator, you'll interact with the C&C system through a secure terminal interface. Here are the commands you'll use to manage the botnet and orchestrate tasks.
 
-### Bot Diagnostics
-* **Real-time Status:** Tracks bots as **ONLINE**, **LAGGING**, or **OFFLINE** using a heartbeat system.
-* **System Info:** Collects detailed diagnostics (OS, Arch, CPU, RAM, Uptime, Load Average, Disk Usage).
-* **Connection Pooling:** Efficiently manages active connections, automatically cleaning up stale ones.
+### Basic Commands
 
-### Supported Attack Methods
-A comprehensive suite of methods for stress testing and authorized vulnerability research:
-* `!udpsmart`, `!udpflood`, `!tcpflood`, `!synflood`, `!ackflood`, `!greflood`, `!dns`, `!http`
+These commands help you get information and manage the terminal.
 
-### Command Validation
-All attack commands are rigorously validated to block private, loopback, and multicast addresses, enforcing a safe operational boundary.
+| Command | Description |
+|---|---|
+| `help` | Shows a list of all available commands. Your best friend! |
+| `clear` | Clears the terminal screen for a fresh view. |
+| `bots` | Displays the total number of currently connected bots. |
+| `botstatus` | Shows a detailed dashboard of bot telemetry data. |
+| `methods` | Lists all the attack methods *you* are allowed to use based on your role. |
+| `gif` | Plays a terminal animation from a `.tfx` file. |
 
----
+### Attack & User Management
 
-## 👤 Operator & Access Control
+These commands are for monitoring attacks and managing user accounts.
 
-A multi-level user system ensures separation of duties and granular control.
+| Command | Description |
+|---|---|
+| `ongoing` | See the attack *you* are currently running. |
+| `allattacks` | View all attacks currently running on the server. |
+| `attackhistory` | Review a history of past attacks. |
+| `stopattack` | Stops the attack you are currently running. |
+| `users` | Lists all user accounts on the system. (Requires Admin/Owner role). |
+| `adduser` | Create a new user account. (Requires Admin/Owner role). |
+| `deluser` | Deletes a user. (Requires Admin/Owner role). |
+| `rbac` | Manage Role-Based Access Control for methods. (Requires Admin/Owner role). |
+| `!reinstall`| Sends a command to all bots to reinstall themselves. (Requires Owner role). |
 
-### User Roles
-| Role | Access Level | Key Privilege |
-| :--- | :--- | :--- |
-| **Owner** | Full | User management + `!reinstall` command |
-| **Admin** | High | Manage all users and all attack methods |
-| **Pro** | Medium | Access to a powerful subset of attack methods |
-| **Basic** | Low | Access to fundamental methods (`!udpflood`, `!http`) |
+## 💥 Launching an Attack
 
-### Terminal Commands
-The interactive **Terminal UI** provides direct control:
+To launch an attack, you use a command starting with `!`. All attack commands follow a simple structure: `!<method> <target> <duration> [options...]`
 
-| Command | Purpose |
-| :--- | :--- |
-| `bots` | Show total connected bot count. |
-| `ongoing` / `allattacks` | View active attack status and history. |
-| `methods` | List available attack methods based on user role. |
-| `users` / `adduser` | User management functions (Admin+ required). |
-| `help` / `clear` | General terminal utility commands. |
+**Example:** `!http get https://example.com 60`
 
----
+This command tells the bots to send HTTP GET requests to `https://example.com` for 60 seconds.
 
-## 📊 Technical Specifications
+### Available Attack Methods
 
-| Parameter | Limit |
-| :--- | :--- |
-| Max Bot Connections | **50,000** |
-| Max Operator Sessions | **10,000** |
-| Max Ongoing Attacks | **1,000** |
-| Session Timeout | **30 minutes** |
-| Auth Lockout | 5 minutes after 3 failed attempts |
+Here are the types of stress tests you can run:
 
----
+*   **Layer 4 Floods:**
+    *   `!udp`, `!udpsmart`: Flood a target with UDP packets.
+    *   `!tcp`, `!syn`, `!ack`, `!rst`: Flood a target with different types of TCP packets.
+    *   `!gre`: Flood a target with GRE packets.
+*   **Layer 4+ (Advanced) Floods:**
+    *   `!vse`: Valve Source Engine query flood.
+    *   `!xmas`: Christmas Tree packet flood.
+    *   `!pps`: Packets-Per-Second bypass flood.
+    *   `!stomp`: TCP Stomp flood.
+*   **Amplification Attacks:**
+    *   `!amp`: DNS Amplification attack.
+*   **Application Layer (Layer 7) Attacks:**
+    *   `!http`: Flood a web server with HTTP requests. (Note: This is listed under Layer 4 in the code, but is a Layer 7 attack).
 
-## 💻 REST API Integration
+**Important:** The system automatically blocks attacks against private, local, or reserved IP addresses to ensure safety.
 
-A dedicated API server allows for easy integration into custom scripts and external tools.
+## 👑 User Roles & Permissions
 
-* **Endpoint Examples:**
-    * `POST /api/attack` – Launch a new attack.
-    * `GET /api/bots` – Retrieve a list of connected bots.
-    * `GET /api/stats` – Get server performance and bot statistics.
-* **Authentication:** Requires unique **API Token & Secret** passed via headers or query parameters.
+The system has a simple role-based system to control who can do what.
+
+| Role | Access Level | What they can do |
+|---|---|---|
+| **Owner** | Full System Control | The boss. Can manage everything and everyone. |
+| **Admin** | Elevated Administration | Manages users and can authorize all attack methods. |
+| **Pro** | Advanced Operator | Can use a powerful subset of high-impact attack methods. |
+| **Basic** | Standard Operator | Can use fundamental methods like `!udpflood` and `!http`. |
+
+## 🤖 For Advanced Users: The REST API
+
+A secure REST API is available for automation and integration with other tools.
+
+*   **Authentication:** Requires an API Token & Secret.
+*   **Key Endpoints:**
+    *   `POST /api/attack`: Programmatically launch an attack.
+    *   `GET /api/bots`: Get a list of all connected bots.
+    *   `GET /api/stats`: Fetch server performance and botnet statistics.
