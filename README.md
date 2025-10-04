@@ -52,16 +52,13 @@ Due to its how it Communicates Securely.
   <tr>
     <td><img src="https://github.com/user-attachments/assets/643b539a-a641-4aaa-883c-fe5d69f040a3" width="100%"/></td>
     <td><img src="https://github.com/user-attachments/assets/2153b117-06e0-484d-81ca-84ff48f41ccb" width="100%"/></td>
-    <td>
-      <a href="https://github.com/user-attachments/assets/7c0a1ad8-73c5-45dc-bcc4-ef36e500a348">
-        <img src="https://github.com/user-attachments/assets/2153b117-06e0-484d-81ca-84ff48f41ccb" width="100%"/>
-      </a>
-      <br/><sub>▶ Click to view video</sub>
-    </td>
   </tr>
 </table>
 
-| **Admin Commands**<br>Usage examples<br><video src="https://github.com/user-attachments/assets/raw/e2b9535f-5ede-401c-bb2d-da97b601a118" controls width="100%"></video> | **Attack / stress Example**<br>Filtered traffic demo<br><video src="https://github.com/user-attachments/assets/raw/531f09ef-ae28-4bcc-aae4-aaa564162acd" controls width="100%"></video> | |
+<a href="https://github.com/user-attachments/assets/7c0a1ad8-73c5-45dc-bcc4-ef36e500a348">
+  <img src="https://img.shields.io/badge/▶_Watch_Video-blue?style=for-the-badge" />
+</a>
+
 
 ---
 
