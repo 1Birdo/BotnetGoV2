@@ -1,6 +1,6 @@
 # 🔱 BotnetGoV2
 
-Welcome to BotnetGo! This is a powerful and secure Command & Control (C&C) system designed for network security testing and resilience validation. It's built to be scalable, secure, and easy to use.
+Welcome to BotnetGo! Just A secure Command & Control (C&C) system designed for network testing and resilience testing. It's built to be scalable, secure, and easy to use.
 
 **⚠️ Disclaimer:** This tool is intended for educational and authorized security testing purposes only. Unauthorized use is strictly prohibited.
 
