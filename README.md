@@ -23,6 +23,7 @@ An enhanced, high-performance C2 (Command and Control) system built in Go (Golan
     <td><img src="https://github.com/user-attachments/assets/652bc9c9-8ec1-4a51-8789-60f765caa06f" width="100%"/></td>
   </tr>
 </table>
+
 > ⚠️ **Disclaimer:** This software is for **educational and authorized security research purposes only**. Use in unauthorized or illegal activities is strictly forbidden. Deploy only in controlled laboratory or sanctioned environments.
 
 > To connect to this you Will need either Openssl or ncat, Alternative Tools can be used.
