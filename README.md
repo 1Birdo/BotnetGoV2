@@ -46,8 +46,6 @@ Due to its how it Communicates Securely.
 | **RBAC** | **Role-Based Access Control** system (`rbac.json`) for fine-grained user permissions over attack methods. |
 | **Flexible Control** | Dual control interfaces: **Terminal UI** for operators and a dedicated **REST API** for programmatic integration. |
 
-![Code_4AQcw8Fo1Q](https://github.com/user-attachments/assets/7c0a1ad8-73c5-45dc-bcc4-ef36e500a348)
-
 
 ## 🖥️ Bot Closeups
 <table>
