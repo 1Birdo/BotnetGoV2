@@ -20,7 +20,8 @@ Welcome to BotnetGo! This is a powerful and secure Command & Control (C&C) syste
   </tr>
 </table>
 
-> 🚫[  **API server / Usage**  ]   If you are look for the API section please check the bottom of the 'Readme.md'
+## 🚫[  **API server / Usage**  ]   
+If you are look for the API section please check the bottom of the 'Readme.md'
 
 ## 🖥️ PuTTY
 For the PuTTY variant of this project, please refer to my Alternatives Project for the supported version. The only difference lies in how communication is handled and how the bots are managed.  The Current PuTTY varient of BotnetGoV2 is privated due to some abuse.
