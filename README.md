@@ -8,7 +8,6 @@ An enhanced, high-performance C2 (Command and Control) system built in Go (Golan
 ^ **Please Click** For a actual Demo / Visual Look
 
 ## 🖥️ C2 Closeups
-
 <table>
   <tr>
     <td><img src="https://github.com/user-attachments/assets/9108315d-bfde-43be-bdd7-a563299db175" width="100%"/></td>
@@ -16,16 +15,6 @@ An enhanced, high-performance C2 (Command and Control) system built in Go (Golan
     <td><img src="https://github.com/user-attachments/assets/8349fcbb-a2b9-4dee-a7ad-131646209f05" width="100%"/></td>
     <td><img src="https://github.com/user-attachments/assets/401c3969-0d9b-4bd4-ae33-e33c83cc8f0a" width="100%"/></td>
   </tr>
-  <tr>
-    <td><img src="https://github.com/user-attachments/assets/df4f3bb9-cb84-4772-b066-64ec02984fd5" width="100%"/></td>
-    <td><img src="https://github.com/user-attachments/assets/2153b117-06e0-484d-81ca-84ff48f41ccb" width="100%"/></td>
-    <td><img src="https://github.com/user-attachments/assets/c9d9da63-daa6-40d4-9911-fe22cd33e13b" width="100%"/></td>
-    <td><img src="https://github.com/user-attachments/assets/652bc9c9-8ec1-4a51-8789-60f765caa06f" width="100%"/></td>
-  </tr>
-</table>
-
-## 🖥️ Bot Closeups
-<table>
   <tr>
     <td><img src="https://github.com/user-attachments/assets/df4f3bb9-cb84-4772-b066-64ec02984fd5" width="100%"/></td>
     <td><img src="https://github.com/user-attachments/assets/2153b117-06e0-484d-81ca-84ff48f41ccb" width="100%"/></td>
@@ -56,6 +45,16 @@ Due to its how it Communicates Securely.
 | **Robust Security** | Multi-layered **Rate Limiting**, secure **JWT Session Management** with revocation, and extensive **Input Validation**. |
 | **RBAC** | **Role-Based Access Control** system (`rbac.json`) for fine-grained user permissions over attack methods. |
 | **Flexible Control** | Dual control interfaces: **Terminal UI** for operators and a dedicated **REST API** for programmatic integration. |
+
+
+## 🖥️ Bot Closeups
+<table>
+  <tr>
+    <td><img src="https://github.com/user-attachments/assets/df4f3bb9-cb84-4772-b066-64ec02984fd5" width="100%"/></td>
+    <td><img src="https://github.com/user-attachments/assets/2153b117-06e0-484d-81ca-84ff48f41ccb" width="100%"/></td>
+    <td><img src="https://github.com/user-attachments/assets/c9d9da63-daa6-40d4-9911-fe22cd33e13b" width="100%"/></td>
+  </tr>
+</table>
 
 ---
 
