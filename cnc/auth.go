@@ -15,36 +15,36 @@ import (
 )
 
 var (
-	loginTracker   = sync.Map{}
-	maxLoginTries  = 3
-	lockoutWindow  = 5 * time.Minute
-	sessionTTL     = 30 * time.Minute
-	userQuotas     = sync.Map{}
-	defaultQuota   = &quota{MaxConcurrent: 3, MaxDaily: 10, MaxDur: 300 * time.Second}
-	ipConnCount    = make(map[string]int)
-	ipConnMu       sync.Mutex
+	loginLog     = sync.Map{}
+	maxTries     = 3
+	lockTime     = 5 * time.Minute
+	sessDuration = 30 * time.Minute
+	quotas       = sync.Map{}
+	defQuota     = &qlimit{MaxConcurrent: 3, MaxDaily: 10, MaxDur: 300 * time.Second}
+	connCt       = make(map[string]int)
+	connMu       sync.Mutex
 )
 
-func authenticate(user, pass string) (bool, *account) {
-	raw, err := os.ReadFile(usersPath)
+func tryLogin(user, pass string) (bool, *acct) {
+	raw, err := os.ReadFile(userFile)
 	if err != nil {
-		safeCompare("x", "y")
+		secureEq("x", "y")
 		return false, nil
 	}
-	var users []account
+	var users []acct
 	if json.Unmarshal(raw, &users) != nil {
 		return false, nil
 	}
-	var hit *account
+	var hit *acct
 	for i := range users {
-		if constEq(users[i].Username, user) {
+		if timeSafeEq(users[i].Username, user) {
 			hit = &users[i]
 		}
 	}
 	if hit == nil {
 		return false, nil
 	}
-	if !checkHash(hit.Password, pass) {
+	if !matchPass(hit.Password, pass) {
 		return false, nil
 	}
 	if hit.Expire.Before(time.Now().UTC()) {
@@ -53,25 +53,25 @@ func authenticate(user, pass string) (bool, *account) {
 	return true, hit
 }
 
-func loadUsers() ([]account, error) {
-	raw, err := os.ReadFile(usersPath)
+func readUsers() ([]acct, error) {
+	raw, err := os.ReadFile(userFile)
 	if err != nil {
 		return nil, err
 	}
-	var out []account
+	var out []acct
 	return out, json.Unmarshal(raw, &out)
 }
 
-func hashPw(pw string) (string, error) {
+func hashPass(pw string) (string, error) {
 	h, err := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
 	return string(h), err
 }
 
-func checkHash(hashed, pw string) bool {
+func matchPass(hashed, pw string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(hashed), []byte(pw)) == nil
 }
 
-func hashSecret(input string) (string, error) {
+func hashKey(input string) (string, error) {
 	salt := make([]byte, 16)
 	if _, err := rand.Read(salt); err != nil {
 		return "", err
@@ -80,9 +80,9 @@ func hashSecret(input string) (string, error) {
 	return fmt.Sprintf("%x:%x", salt, h), nil
 }
 
-func verifySecret(hashed, plain string) bool { return checkHash(hashed, plain) }
+func matchKey(hashed, plain string) bool { return matchPass(hashed, plain) }
 
-func safeCompare(a, b string) bool {
+func secureEq(a, b string) bool {
 	ab, bb := []byte(a), []byte(b)
 	if len(ab) != len(bb) {
 		pad := make([]byte, max(len(ab), len(bb)))
@@ -93,9 +93,9 @@ func safeCompare(a, b string) bool {
 	return subtle.ConstantTimeCompare(ab, bb) == 1
 }
 
-func constEq(a, b string) bool { return safeCompare(a, b) }
+func timeSafeEq(a, b string) bool { return secureEq(a, b) }
 
-func randStr(n int) (string, error) {
+func randHex(n int) (string, error) {
 	const abc = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	buf := make([]byte, n)
 	if _, err := rand.Read(buf); err != nil {
@@ -107,32 +107,32 @@ func randStr(n int) (string, error) {
 	return string(buf), nil
 }
 
-func genAPICreds() (string, string, error) {
-	tok, err := randStr(16)
+func makeAPICreds() (string, string, error) {
+	tok, err := randHex(16)
 	if err != nil {
 		return "", "", err
 	}
-	sec, err := randStr(24)
+	sec, err := randHex(24)
 	if err != nil {
 		return "", "", err
 	}
 	return tok, sec, nil
 }
 
-func checkLoginRate(ip string) bool {
-	raw, ok := loginTracker.Load(ip)
+func canLogin(ip string) bool {
+	raw, ok := loginLog.Load(ip)
 	if !ok {
-		loginTracker.Store(ip, &loginAttempt{Count: 0, LastTry: time.Now()})
+		loginLog.Store(ip, &loginRec{Count: 0, LastTry: time.Now()})
 		return true
 	}
-	a := raw.(*loginAttempt)
+	a := raw.(*loginRec)
 	a.Lock.Lock()
 	defer a.Lock.Unlock()
-	if time.Since(a.LastTry) > lockoutWindow {
+	if time.Since(a.LastTry) > lockTime {
 		a.Count = 0
 	}
-	if a.Count >= maxLoginTries {
-		logRateHit(ip, "auth lockout")
+	if a.Count >= maxTries {
+		rateLog(ip, "auth lockout")
 		return false
 	}
 	a.Count++
@@ -140,68 +140,68 @@ func checkLoginRate(ip string) bool {
 	return true
 }
 
-func resetLoginTracker(ip string) { loginTracker.Delete(ip) }
+func clearLogin(ip string) { loginLog.Delete(ip) }
 
-func checkConnLimit(ip string) bool {
-	ipConnMu.Lock()
-	defer ipConnMu.Unlock()
-	if ipConnCount[ip] >= capPerIP {
+func grabConn(ip string) bool {
+	connMu.Lock()
+	defer connMu.Unlock()
+	if connCt[ip] >= maxPerIP {
 		return false
 	}
-	ipConnCount[ip]++
+	connCt[ip]++
 	return true
 }
 
-func releaseConn(ip string) {
-	ipConnMu.Lock()
-	defer ipConnMu.Unlock()
-	if ipConnCount[ip] > 0 {
-		ipConnCount[ip]--
+func freeConn(ip string) {
+	connMu.Lock()
+	defer connMu.Unlock()
+	if connCt[ip] > 0 {
+		connCt[ip]--
 	}
 }
 
-func gcConnCounts() {
+func sweepConns() {
 	t := time.NewTicker(1 * time.Hour)
 	defer t.Stop()
 	for range t.C {
-		ipConnMu.Lock()
-		for ip := range ipConnCount {
-			ipConnCount[ip] = 0
+		connMu.Lock()
+		for ip := range connCt {
+			connCt[ip] = 0
 		}
-		ipConnMu.Unlock()
+		connMu.Unlock()
 	}
 }
 
-func getQuota(username string) *quota {
-	raw, ok := userQuotas.Load(username)
+func getLimit(username string) *qlimit {
+	raw, ok := quotas.Load(username)
 	if ok {
-		q := raw.(*quota)
+		q := raw.(*qlimit)
 		if time.Since(q.ResetAt) >= 24*time.Hour {
 			q.UsedToday = 0
 			q.ResetAt = time.Now()
 		}
 		return q
 	}
-	q := &quota{
-		MaxConcurrent: defaultQuota.MaxConcurrent,
-		MaxDaily:      defaultQuota.MaxDaily,
-		MaxDur:        defaultQuota.MaxDur,
+	q := &qlimit{
+		MaxConcurrent: defQuota.MaxConcurrent,
+		MaxDaily:      defQuota.MaxDaily,
+		MaxDur:        defQuota.MaxDur,
 		ResetAt:       time.Now(),
 	}
-	userQuotas.Store(username, q)
+	quotas.Store(username, q)
 	return q
 }
 
-func canAttack(who string, dur time.Duration) (bool, string) {
-	q := getQuota(who)
+func quotaOk(who string, dur time.Duration) (bool, string) {
+	q := getLimit(who)
 	live := 0
-	atkMu.Lock()
-	for _, a := range liveAttacks {
+	runMu.Lock()
+	for _, a := range running {
 		if a.who == who && time.Now().Before(a.started.Add(a.dur)) {
 			live++
 		}
 	}
-	atkMu.Unlock()
+	runMu.Unlock()
 	if live >= q.MaxConcurrent {
 		return false, "max concurrent attacks hit"
 	}
@@ -212,16 +212,16 @@ func canAttack(who string, dur time.Duration) (bool, string) {
 		return false, "duration too long"
 	}
 	q.UsedToday++
-	userQuotas.Store(who, q)
+	quotas.Store(who, q)
 	return true, ""
 }
 
-func gcQuotas() {
+func sweepQuotas() {
 	t := time.NewTicker(1 * time.Hour)
 	defer t.Stop()
 	for range t.C {
-		userQuotas.Range(func(k, v interface{}) bool {
-			q := v.(*quota)
+		quotas.Range(func(k, v interface{}) bool {
+			q := v.(*qlimit)
 			if time.Since(q.ResetAt) >= 24*time.Hour {
 				q.UsedToday = 0
 				q.ResetAt = time.Now()
@@ -231,15 +231,15 @@ func gcQuotas() {
 	}
 }
 
-func gcLoginAttempts() {
+func sweepLogins() {
 	t := time.NewTicker(1 * time.Hour)
 	defer t.Stop()
 	for range t.C {
-		loginTracker.Range(func(k, v interface{}) bool {
-			a := v.(*loginAttempt)
+		loginLog.Range(func(k, v interface{}) bool {
+			a := v.(*loginRec)
 			a.Lock.Lock()
 			if time.Since(a.LastTry) > 24*time.Hour {
-				loginTracker.Delete(k)
+				loginLog.Delete(k)
 			}
 			a.Lock.Unlock()
 			return true
@@ -247,31 +247,5 @@ func gcLoginAttempts() {
 	}
 }
 
-func (u *account) allowed(method string) bool {
-	if u.Level == "Owner" {
-		return true
-	}
-	aclMu.RLock()
-	defer aclMu.RUnlock()
-	roles, ok := permissions.Methods[method]
-	if !ok {
-		return false
-	}
-	for _, r := range roles {
-		if u.Level == r {
-			return true
-		}
-	}
-	return false
-}
-
-func titleAnsi(t string) string            { return "\033]0;" + t + "\007" }
-func setTermTitle(c net.Conn, t string)     { c.Write([]byte(fmt.Sprintf("\033]0;%s\007", t))) }
-func rankFromStr(s string) rank {
-	switch s {
-	case "Owner": return rankOwner
-	case "Admin": return rankAdmin
-	case "Pro":   return rankPro
-	default:      return rankBasic
-	}
-}
+func termTitle(t string) string            { return "\033]0;" + t + "\007" }
+func pushTitle(c net.Conn, t string)       { c.Write([]byte(fmt.Sprintf("\033]0;%s\007", t))) }

