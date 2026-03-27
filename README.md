@@ -1,5 +1,8 @@
 # BotnetGoV2
 
+(Deprecated Project)
+
+
 A Command & Control (C2) system for network testing and resilience evaluation. Built in Go for performance and cross-platform support.
 
 **Disclaimer:** This tool is for educational and authorized security testing only. Unauthorized use is prohibited.
