@@ -1,10 +1,10 @@
 # BotnetGoV2
 
-A Command & Control (C&C) system for network testing and resilience evaluation. The system is built for scalability, security, and operational efficiency.
+A Command & Control (C2) system for network testing and resilience evaluation. Built in Go for performance and cross-platform support.
 
 **Disclaimer:** This tool is for educational and authorized security testing only. Unauthorized use is prohibited.
 
-## C2 Screenshots
+## Screenshots
 <table>
   <tr>
     <td><img src="https://github.com/user-attachments/assets/9108315d-bfde-43be-bdd7-a563299db175" width="100%"/></td>
@@ -20,126 +20,152 @@ A Command & Control (C&C) system for network testing and resilience evaluation. 
   </tr>
 </table>
 
-## API Server and Usage
-
-For API documentation, see the bottom of this readme.
-
-## PuTTY Version
-
-An alternative PuTTY-based variant exists in a separate project. The primary differences are in communication protocols and bot management. The PuTTY variant is currently private.
-
-## Key Features
-
-* High-performance implementation built with Go for concurrent operations
-* TLS 1.3 enforcement with bcrypt password hashing and JWT session management
-* Role-Based Access Control (RBAC) with granular permissions
-* Comprehensive Layer 4 and Layer 7 attack methods
-* Real-time monitoring and diagnostics for connected bots
-
-## Operator Terminal
-
-Operators interact with the C&C system through a secure terminal interface using the following commands.
-
-## Bot Screenshots
-<table>
-  <tr>
-    <td><img src="https://github.com/user-attachments/assets/643b539a-a641-4aaa-883c-fe5d69f040a3" width="100%"/></td>
-    <td><img src="https://github.com/user-attachments/assets/2153b117-06e0-484d-81ca-84ff48f41ccb" width="100%"/></td>
-    <td><img src="https://github.com/user-attachments/assets/646c2a92-220f-4003-b981-44d915313e44" width="100%"/></td>
-  </tr>
-</table>
-
 [Watch Demo Video](https://github.com/user-attachments/assets/7c0a1ad8-73c5-45dc-bcc4-ef36e500a348)
 
-## Core Security & Architecture
+## Project Layout
 
-The system uses a dual server architecture to segregate bot and operator traffic. When the API server is active, this becomes a triple architecture.
+```
+├── cnc/                 # C2 server
+│   ├── cfg.go           # constants / config
+│   ├── types.go         # shared type definitions
+│   ├── main.go          # entry point, TLS listeners
+│   ├── tui.go           # terminal UI, command loop, animations
+│   ├── auth.go          # user auth, bcrypt, quotas
+│   ├── token.go         # JWT sessions, refresh, revocation
+│   ├── acl.go           # RBAC permission system
+│   ├── bots.go          # bot registry, heartbeat, diagnostics
+│   ├── wire.go          # binary packet protocol
+│   ├── api.go           # REST API (HTTPS)
+│   ├── pool.go          # TLS connection pooling
+│   ├── store.go         # thread-safe bounded collections
+│   ├── throttle.go      # rate limiting
+│   ├── log.go           # structured logging
+│   ├── check.go         # input validation
+│   └── data/
+│       ├── certs/       # TLS certs (server.crt, server.key)
+│       ├── geo/         # MaxMind GeoIP databases
+│       ├── gifs/        # terminal animations (.tfx)
+│       ├── json/        # rbac.json, users.json
+│       └── logs/        # runtime logs
+│
+├── device/              # bot client
+│   ├── bot.go           # bot logic, packet protocol, attack methods
+│   └── build.sh         # cross-compile for linux targets
+│
+├── gifs/                # source .gif files
+├── gif.py               # GIF → TFX converter
+└── tut.md               # setup & usage guide
+```
 
-### Architecture Summary
+## Architecture
 
-| Component | Purpose | Protocol & Port |
-| :--- | :--- | :--- |
-| **Bot Listener** | Manages bot connections | Custom Binary/TLS on `7002` |
-| **User/Admin Listener** | Handles operator connections | Custom/TLS on `420` |
-| **API Server** | Provides programmatic control | HTTPS REST API on `8080` |
+| Component | Port | Protocol |
+|:---|:---|:---|
+| Bot listener | `7002` | Custom binary over TLS |
+| User terminal | `420` | ANSI TUI over TLS |
+| REST API | `8443` | HTTPS |
 
-### Security Implementation
+## Security
 
-* **Authentication:** bcrypt password hashing with constant-time comparisons
-* **Session Management:** JWT tokens with refresh, revocation, and IP validation
-* **TLS:** Enforces TLS 1.3 with modern cipher suites
-* **Resource Management:** Bounded data structures prevent memory exhaustion
+- TLS 1.3 enforced on all connections
+- bcrypt password hashing with constant-time comparison
+- JWT sessions with refresh tokens, revocation, and IP binding
+- RBAC with per-method granularity
+- Rate limiting on auth, attacks, API, commands, and connections
+- Bounded data structures to prevent memory exhaustion
+- Input validation on all user-supplied data
+
+## Quick Start
+
+### C2 Server
+
+```bash
+cd cnc
+# place server.crt + server.key in data/certs/
+go build -o c2 .
+./c2
+```
+
+### Bot Client
+
+Edit the C2 address in `device/bot.go`, then:
+
+```bash
+cd device
+go build -o bot .
+./bot
+```
+
+Cross-compile for IoT targets:
+
+```bash
+cd device
+chmod +x build.sh
+./build.sh
+# binaries in build/
+```
+
+### GIF Converter
+
+```bash
+pip install Pillow numpy
+python gif.py gifs/crow.gif cnc/data/gifs/crow.tfx
+```
 
 ## Terminal Commands
 
-### Basic Commands
+| Command | Description |
+|:---|:---|
+| `help` | Show command list |
+| `bots` | Connected bot count |
+| `botstatus` | Bot telemetry dashboard |
+| `methods` | Available attack methods |
+| `ongoing` | Current attack status |
+| `allattacks` | All active attacks |
+| `stopattack` | Stop running attack |
+| `attackhistory` | Past attacks |
+| `gif list` | List animations |
+| `gif <name>` | Play animation |
+| `clear` | Clear screen |
+| `logout` | Disconnect |
+
+### Admin / Owner
 
 | Command | Description |
-|---|---|
-| `help` | Lists all available commands |
-| `clear` | Clears the terminal screen |
-| `bots` | Displays total connected bots |
-| `botstatus` | Shows bot telemetry dashboard |
-| `methods` | Lists available attack methods based on role |
-| `gif` | Plays terminal animation from `.tfx` file |
+|:---|:---|
+| `adduser` | Create user account |
+| `deluser` | Delete user account |
+| `users` | List all users |
+| `rbac` | View/edit permissions |
+| `admin` | Admin command panel |
+| `owner` | Owner command panel |
+| `!reinstall` | Reinstall all bots (owner) |
 
-### Attack & User Management
+### Attack Methods
 
-| Command | Description |
-|---|---|
-| `ongoing` | Displays currently running attack |
-| `allattacks` | Lists all active attacks on the server |
-| `attackhistory` | Shows past attack history |
-| `stopattack` | Terminates current attack |
-| `users` | Lists all user accounts (Admin/Owner) |
-| `adduser` | Creates new user account (Admin/Owner) |
-| `deluser` | Deletes user account (Admin/Owner) |
-| `rbac` | Manages RBAC permissions (Admin/Owner) |
-| `!reinstall`| Commands all bots to reinstall (Owner) |
+Format: `!method ip port duration`
 
-## Attack Commands
+**Layer 4:** `!udp` `!udpsmart` `!tcp` `!syn` `!ack` `!rst` `!gre`
 
-Attack commands use the format: `!<method> <target> <duration> [options...]`
+**Layer 4+:** `!vse` `!xmas` `!pps` `!stomp`
 
-**Example:** `!http get https://example.com 60`
-
-### Available Methods
-
-**Layer 4 Floods:**
-* `!udp`, `!udpsmart` - UDP packet floods
-* `!tcp`, `!syn`, `!ack`, `!rst` - TCP packet floods
-* `!gre` - GRE packet floods
-
-**Layer 4+ (Advanced) Floods:**
-* `!vse` - Valve Source Engine query flood
-* `!xmas` - Christmas Tree packet flood
-* `!pps` - Packets-Per-Second bypass flood
-* `!stomp` - TCP Stomp flood
-
-**Amplification Attacks:**
-* `!amp` - DNS Amplification
-
-**Application Layer (Layer 7) Attacks:**
-* `!http` - HTTP request floods
-
-The system blocks attacks against private, local, or reserved IP addresses.
-
-## User Roles & Permissions
-
-| Role | Access Level | Capabilities |
-|---|---|---|
-| **Owner** | Full System Control | Complete system management and configuration |
-| **Admin** | Elevated Administration | User management and method authorization |
-| **Pro** | Advanced Operator | High-impact attack methods |
-| **Basic** | Standard Operator | Fundamental methods (`!udp`, `!http`) |
+**Amplification:** `!amp`
 
 ## REST API
 
-The REST API provides programmatic control and automation.
+Auth: API token + secret (generated per user via `adduser`)
 
-**Authentication:** API Token & Secret required
+| Method | Endpoint | Description |
+|:---|:---|:---|
+| `POST` | `/api/attack` | Launch attack |
+| `GET` | `/api/bots` | List bots |
+| `GET` | `/api/stats` | Server stats |
 
-**Key Endpoints:**
-* `POST /api/attack` - Launch attacks
-* `GET /api/bots` - List connected bots
-* `GET /api/stats` - Retrieve server statistics
+## User Roles
+
+| Role | Access |
+|:---|:---|
+| Owner | Full system control |
+| Admin | User management, method auth |
+| Pro | All attack methods |
+| Basic | `!udp`, `!tcp` only |

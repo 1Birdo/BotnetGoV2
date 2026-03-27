@@ -2,7 +2,7 @@
 import os
 import sys
 import argparse
-from PIL import Image, ImageOps
+from PIL import Image
 import numpy as np
 
 def gif_to_tfx(gif_path, output_path, target_width=80, target_height=24):

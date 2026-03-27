@@ -1,0 +1,42 @@
+# Binaries
+*.exe
+*.out
+cnc/c2
+cnc/c2.exe
+device/build/
+device/x86
+device/armv7l
+device/armv5l
+device/armv8l
+device/mips
+device/mipsel
+device/bot
+
+# TLS certs (generate your own)
+cnc/data/certs/*.crt
+cnc/data/certs/*.key
+cnc/data/certs/*.pem
+
+# JWT signing key
+cnc/data/certs/jwt.key
+
+# Logs
+cnc/data/logs/
+
+# User data (contains hashed passwords)
+cnc/data/json/users.json
+
+# Python
+__pycache__/
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Cloned repos
+BotnetGoV2/

